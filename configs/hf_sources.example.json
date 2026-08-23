@@ -1,0 +1,15 @@
+[
+  {
+    "dataset": "ORG/CHINESE_DATASET_A",
+    "config": "CONFIG_NAME",
+    "split": "train",
+    "text_column": "text",
+    "weight": 0.6
+  },
+  {
+    "dataset": "ORG/CHINESE_DATASET_B",
+    "split": "train",
+    "text_column": "content",
+    "weight": 0.4
+  }
+]

@@ -1,0 +1,20 @@
+[
+  {
+    "dataset": "Morton-Li/ChineseWebText2.0-HighQuality",
+    "split": "train",
+    "text_column": "text",
+    "weight": 0.5
+  },
+  {
+    "dataset": "shjwudp/chinese-c4",
+    "split": "train",
+    "text_column": "text",
+    "weight": 0.3
+  },
+  {
+    "dataset": "rfikd/wikipedia-zh-cn",
+    "split": "train",
+    "text_column": "text",
+    "weight": 0.2
+  }
+]

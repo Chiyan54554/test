@@ -1,0 +1,18 @@
+[
+  {
+    "path": "../data/knowledge.bin",
+    "weight": 0.4
+  },
+  {
+    "path": "../data/books.bin",
+    "weight": 0.3
+  },
+  {
+    "path": "../data/qa.bin",
+    "weight": 0.2
+  },
+  {
+    "path": "../data/code.bin",
+    "weight": 0.1
+  }
+]
