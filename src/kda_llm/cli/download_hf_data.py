@@ -79,18 +79,22 @@ def main() -> None:
     parser.add_argument("--limit", type=int, help="maximum documents to write")
     parser.add_argument("--sources", help="JSON array describing multiple dataset sources")
     parser.add_argument("--total-documents", type=int, help="total documents to download across all sources")
+    parser.add_argument("--progress-every", type=int, default=1000, help="print progress every N documents")
     args = parser.parse_args()
     if args.limit is not None and args.total_documents is not None:
         parser.error("--limit cannot be combined with --total-documents")
     if args.total_documents is not None and args.total_documents <= 0:
         parser.error("--total-documents must be a positive integer")
+    if args.progress_every <= 0:
+        parser.error("--progress-every must be a positive integer")
     sources = load_sources(args, parser)
     allocate_document_limits(sources, args.total_documents, parser)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.with_suffix(output_path.suffix + ".partial")
     total_documents = 0
-    with output_path.open("w", encoding="utf-8", newline="\n") as output_file:
+    with temporary_path.open("w", encoding="utf-8", newline="\n") as output_file:
         for source in sources:
             limit = source.get("limit")
             if limit == 0:
@@ -99,7 +103,15 @@ def main() -> None:
             dataset_args = {"path": source["dataset"], "split": source["split"], "streaming": True}
             if source.get("config"):
                 dataset_args["name"] = source["config"]
-            dataset = load_dataset(**dataset_args)
+            try:
+                dataset = load_dataset(**dataset_args)
+            except ValueError as error:
+                if "Compression type zstd not supported" in str(error):
+                    raise RuntimeError(
+                        "this dataset uses zstd compression; run `uv sync --extra data` "
+                        "to install the required zstandard dependency"
+                    ) from error
+                raise
             document_count = 0
             for row in dataset:
                 text = row.get(source["text_column"])
@@ -111,11 +123,19 @@ def main() -> None:
                 output_file.write(text + "\n")
                 document_count += 1
                 total_documents += 1
+                if document_count % args.progress_every == 0:
+                    target = limit if limit is not None else "unlimited"
+                    print(
+                        f"{source['dataset']}: {document_count:,}/{target} documents "
+                        f"(total {total_documents:,})",
+                        flush=True,
+                    )
                 if limit is not None and document_count >= limit:
                     break
-            print(f"{source['dataset']}: wrote {document_count:,} documents")
+            print(f"{source['dataset']}: wrote {document_count:,} documents", flush=True)
 
-    print(f"wrote {total_documents:,} documents to {output_path}")
+    temporary_path.replace(output_path)
+    print(f"wrote {total_documents:,} documents to {output_path}", flush=True)
 
 
 if __name__ == "__main__":

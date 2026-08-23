@@ -56,6 +56,8 @@ uv sync --extra data
 uv run kda-download-hf --dataset ORG/DATASET --config CONFIG --split train --text-column text --output data/train.txt
 ```
 
+`data` extra 也包含 `zstandard`，可讀取部分 Hugging Face 資料集使用的 `.zst` 壓縮檔。
+
 下載器使用 Hugging Face 串流模式，不會先下載完整資料集。若只需要部分語料，在命令最後加上 `--limit 10000`，達到 10,000 份有效文字文件後就會停止。若資料集需要授權，先登入：
 
 ```powershell
@@ -71,6 +73,8 @@ uv run kda-download-hf --sources configs/hf_sources.json --total-documents 10000
 ```
 
 各來源會依 manifest 順序串流，並依 `weight` 分配文件名額。例如 60% 與 40% 的兩個來源搭配 `--total-documents 1000000`，分別只抓 600,000 與 400,000 份有效文件。達標即停止，不會下載其餘資料集內容。
+
+下載、繁體轉換與 token 編碼每 1,000 份文件或行數會顯示進度；若需要調整頻率，加入 `--progress-every 100`。
 
 ## 資料編碼與訓練
 
@@ -107,7 +111,19 @@ uv run kda-train --train-sources configs/train_sources.json --val-data data/vali
 
 ```powershell
 uv sync --extra cuda --extra data --extra traditional
-uv run kda-pipeline --total-documents 100000 --steps 100 --work-dir runs/smoke --device cuda
+uv run kda-pipeline --total-documents 100000 --progress-every 1000 --steps 100 --work-dir runs/smoke --device cuda
 ```
 
-所有產物會放在 `runs/smoke/`，原始下載、繁體語料、tokenizer、token stream 與 checkpoint 不會散落在專案根目錄。`--device cuda` 會在 CUDA 無法使用時立即停止，而不會悄悄退回 CPU。先以預設的 100,000 份文件和 100 steps 確認流程；成功後再提高 `--total-documents` 與 `--steps`。
+所有產物會放在 `runs/smoke/`，原始下載、繁體語料、tokenizer、token stream 與 checkpoint 不會散落在專案根目錄。專案會從 PyTorch 的 CUDA 12.8 wheel index 安裝 `torch`；`--device cuda` 會在 CUDA 無法使用時立即停止，而不會悄悄退回 CPU。先以預設的 100,000 份文件和 100 steps 確認流程；成功後再提高 `--total-documents` 與 `--steps`。
+
+同步後先驗證 CUDA：
+
+```powershell
+uv run python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
+```
+
+若下載、轉檔或編碼中斷，使用相同設定加上 `--resume` 即可重用已完整完成的資料階段，只有未完成階段會重新執行。輸出會先寫入 `.partial` 暫存檔，成功後才原子更名為最終檔案。
+
+```powershell
+uv run kda-pipeline --total-documents 100000 --steps 100 --work-dir runs/smoke --device cuda --resume
+```

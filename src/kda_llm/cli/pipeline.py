@@ -6,7 +6,10 @@ import argparse
 import hashlib
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
+
+import torch
 
 
 def run_module(module: str, *arguments: str) -> None:
@@ -15,12 +18,38 @@ def run_module(module: str, *arguments: str) -> None:
     subprocess.run(command, check=True)
 
 
+def run_stage(
+    name: str,
+    state_dir: Path,
+    artifacts: tuple[Path, ...],
+    resume: bool,
+    action: Callable[[], None],
+) -> None:
+    marker_path = state_dir / f"{name}.done"
+    if resume and marker_path.is_file() and all(path.is_file() for path in artifacts):
+        print(f"[resume] skipping completed stage: {name}")
+        return
+    marker_path.unlink(missing_ok=True)
+    print(f"\n=== {name} ===")
+    action()
+    marker_path.write_text("completed\n", encoding="utf-8")
+
+
+def validate_device(device: str) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is not available to PyTorch")
+    selected = "cuda" if device == "auto" and torch.cuda.is_available() else "cpu" if device == "auto" else device
+    print(f"training device: {selected}")
+
+
 def split_corpus(input_path: Path, train_path: Path, valid_path: Path, validation_ratio: float) -> None:
     train_count = 0
     valid_count = 0
-    with input_path.open("r", encoding="utf-8") as input_file, train_path.open(
+    train_temporary_path = train_path.with_suffix(train_path.suffix + ".partial")
+    valid_temporary_path = valid_path.with_suffix(valid_path.suffix + ".partial")
+    with input_path.open("r", encoding="utf-8") as input_file, train_temporary_path.open(
         "w", encoding="utf-8", newline="\n"
-    ) as train_file, valid_path.open("w", encoding="utf-8", newline="\n") as valid_file:
+    ) as train_file, valid_temporary_path.open("w", encoding="utf-8", newline="\n") as valid_file:
         for line in input_file:
             # Content hashing gives a stable split even when source order changes.
             bucket = int.from_bytes(hashlib.blake2b(line.encode("utf-8"), digest_size=8).digest(), "big")
@@ -32,6 +61,8 @@ def split_corpus(input_path: Path, train_path: Path, valid_path: Path, validatio
                 train_count += 1
     if not train_count or not valid_count:
         raise RuntimeError("split produced an empty train or validation corpus")
+    train_temporary_path.replace(train_path)
+    valid_temporary_path.replace(valid_path)
     print(f"split corpus: {train_count:,} train documents, {valid_count:,} validation documents")
 
 
@@ -39,6 +70,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the full Chinese KDA training pipeline.")
     parser.add_argument("--sources", default="configs/hf_sources.json", help="weighted Hugging Face source manifest")
     parser.add_argument("--total-documents", type=int, default=100_000, help="documents to stream before processing")
+    parser.add_argument("--progress-every", type=int, default=1000, help="download progress interval in documents")
     parser.add_argument("--work-dir", default="runs/smoke", help="directory for all generated pipeline artifacts")
     parser.add_argument("--validation-ratio", type=float, default=0.01)
     parser.add_argument("--steps", type=int, default=100)
@@ -47,18 +79,24 @@ def main() -> None:
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--device", choices=("cuda", "auto", "cpu"), default="cuda")
+    parser.add_argument("--resume", action="store_true", help="reuse completed data preparation stages")
     args = parser.parse_args()
 
     if args.total_documents <= 1:
         parser.error("--total-documents must be greater than 1")
+    if args.progress_every <= 0:
+        parser.error("--progress-every must be a positive integer")
     if not 0 < args.validation_ratio < 1:
         parser.error("--validation-ratio must be between 0 and 1")
+    validate_device(args.device)
 
     work_dir = Path(args.work_dir)
     corpus_dir = work_dir / "corpus"
     tokenizer_dir = work_dir / "tokenizer"
     checkpoint_dir = work_dir / "checkpoints"
+    state_dir = work_dir / ".pipeline_state"
     corpus_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.mkdir(parents=True, exist_ok=True)
     raw_path = corpus_dir / "raw.txt"
     traditional_path = corpus_dir / "traditional.txt"
     train_text_path = corpus_dir / "train.txt"
@@ -67,35 +105,46 @@ def main() -> None:
     train_bin_path = corpus_dir / "train.bin"
     valid_bin_path = corpus_dir / "valid.bin"
 
-    run_module(
-        "kda_llm.cli.download_hf_data",
-        "--sources", args.sources,
-        "--total-documents", str(args.total_documents),
-        "--output", str(raw_path),
+    run_stage(
+        "download", state_dir, (raw_path,), args.resume,
+        lambda: run_module(
+            "kda_llm.cli.download_hf_data", "--sources", args.sources,
+            "--total-documents", str(args.total_documents), "--progress-every", str(args.progress_every),
+            "--output", str(raw_path),
+        ),
     )
-    run_module(
-        "kda_llm.cli.convert_traditional",
-        "--input", str(raw_path),
-        "--output", str(traditional_path),
+    run_stage(
+        "convert", state_dir, (traditional_path,), args.resume,
+        lambda: run_module(
+            "kda_llm.cli.convert_traditional", "--input", str(raw_path), "--output", str(traditional_path),
+            "--progress-every", str(args.progress_every),
+        ),
     )
-    split_corpus(traditional_path, train_text_path, valid_text_path, args.validation_ratio)
-    run_module(
-        "kda_llm.cli.build_tokenizer",
-        "--input", str(train_text_path),
-        "--output", str(tokenizer_prefix),
+    run_stage(
+        "split", state_dir, (train_text_path, valid_text_path), args.resume,
+        lambda: split_corpus(traditional_path, train_text_path, valid_text_path, args.validation_ratio),
     )
-    run_module(
-        "kda_llm.cli.prepare_data",
-        "--tokenizer", str(tokenizer_prefix) + ".model",
-        "--input", str(train_text_path),
-        "--output", str(train_bin_path),
+    run_stage(
+        "tokenizer", state_dir, (Path(str(tokenizer_prefix) + ".model"), Path(str(tokenizer_prefix) + ".vocab")), args.resume,
+        lambda: run_module("kda_llm.cli.build_tokenizer", "--input", str(train_text_path), "--output", str(tokenizer_prefix)),
     )
-    run_module(
-        "kda_llm.cli.prepare_data",
-        "--tokenizer", str(tokenizer_prefix) + ".model",
-        "--input", str(valid_text_path),
-        "--output", str(valid_bin_path),
+    run_stage(
+        "encode_train", state_dir, (train_bin_path,), args.resume,
+        lambda: run_module(
+            "kda_llm.cli.prepare_data", "--tokenizer", str(tokenizer_prefix) + ".model",
+            "--input", str(train_text_path), "--output", str(train_bin_path),
+            "--progress-every", str(args.progress_every),
+        ),
     )
+    run_stage(
+        "encode_valid", state_dir, (valid_bin_path,), args.resume,
+        lambda: run_module(
+            "kda_llm.cli.prepare_data", "--tokenizer", str(tokenizer_prefix) + ".model",
+            "--input", str(valid_text_path), "--output", str(valid_bin_path),
+            "--progress-every", str(args.progress_every),
+        ),
+    )
+    print("\n=== train ===")
     run_module(
         "kda_llm.cli.train",
         "--train-data", str(train_bin_path),
