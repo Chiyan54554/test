@@ -178,6 +178,12 @@ uv run --extra cuda --extra data kda-sft-pipeline --checkpoint runs/smoke/checkp
 
 SFT 訓練必須從預訓練 checkpoint 開始，不要將中斷的 SFT checkpoint 當作新的 base checkpoint。正常情況下，loss 會逐步下降但不應在數百 step 內趨近於 `0.0000`；若發生，先停止訓練並確認使用的是最新版程式。
 
+SFT checkpoint 生成時必須帶 `--chat`，讓推論 prompt 與訓練對話模板一致；重複輸出時可提高 `--repetition-penalty`：
+
+```powershell
+uv run kda-generate --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --tokenizer runs/smoke/tokenizer/chinese.model --prompt "請用繁體中文介紹 KDA。" --chat --system "請清楚、簡潔地回答問題。" --temperature 0.7 --top-k 40 --top-p 0.9 --repetition-penalty 1.1 --device cuda
+```
+
 若已取得 [PromptPair-TW](https://huggingface.co/datasets/liswei/PromptPair-TW) 的存取權並接受其 `CC BY-NC-SA 4.0` 條款，可改用 [configs/sft_sources.example.json](configs/sft_sources.example.json) 的第二個來源；請依資料集頁面條款確認商業使用與衍生資料的限制。每個來源可用 `limit` 控制數量，工具會依內容雜湊去重。
 
 ## 一鍵流程

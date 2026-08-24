@@ -19,6 +19,7 @@ class GenerationConfig:
     temperature: float = 0.8
     top_k: int = 50
     top_p: float = 0.95
+    repetition_penalty: float = 1.0
     seed: int = 42
 
 
@@ -29,6 +30,15 @@ def load_model(checkpoint_path: str, device: torch.device) -> KDALanguageModel:
     model = KDALanguageModel(KDAConfig(**checkpoint["config"])).to(device)
     model.load_state_dict(checkpoint["model"], strict=True)
     return model.eval()
+
+
+def format_chat_prompt(prompt: str, system_prompt: str | None = None) -> str:
+    """Render the literal role format used by the SFT encoder."""
+    parts = []
+    if system_prompt:
+        parts.append(f"<|system|>\n{system_prompt.strip()}")
+    parts.extend((f"<|user|>\n{prompt.strip()}", "<|assistant|>\n"))
+    return "\n".join(parts)
 
 
 def generate(model: KDALanguageModel, tokenizer: spm.SentencePieceProcessor, prompt: str, config: GenerationConfig, device: torch.device) -> str:
@@ -47,7 +57,8 @@ def generate(model: KDALanguageModel, tokenizer: spm.SentencePieceProcessor, pro
         logits, _, cache = model(token_ids, use_cache=True)
         position = token_ids.size(1)
         for index in range(config.max_new_tokens):
-            next_token = sample_next_token(logits[:, -1], config.temperature, config.top_k, config.top_p)
+            history = torch.cat((token_ids, torch.tensor([generated_ids], device=device)), dim=1) if generated_ids else token_ids
+            next_token = sample_next_token(logits[:, -1], config.temperature, config.top_k, config.top_p, history, config.repetition_penalty)
             if next_token.item() == tokenizer.eos_id():
                 break
             generated_ids.append(next_token.item())

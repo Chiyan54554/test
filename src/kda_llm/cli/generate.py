@@ -8,7 +8,7 @@ from pathlib import Path
 import sentencepiece as spm
 import torch
 
-from kda_llm.inference import GenerationConfig, generate, load_model, sample_next_token
+from kda_llm.inference import GenerationConfig, format_chat_prompt, generate, load_model, sample_next_token
 
 
 def main() -> None:
@@ -20,11 +20,14 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--repetition-penalty", type=float, default=1.0, help="penalty >= 1 for tokens already in context")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--chat", action=argparse.BooleanOptionalAction, default=False, help="render the SFT user/assistant template")
+    parser.add_argument("--system", help="optional system instruction used with --chat")
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--output")
     args = parser.parse_args()
-    if args.max_new_tokens <= 0 or args.temperature <= 0 or args.top_k < 0 or not 0 < args.top_p <= 1:
+    if args.max_new_tokens <= 0 or args.temperature <= 0 or args.top_k < 0 or not 0 < args.top_p <= 1 or args.repetition_penalty < 1:
         parser.error("invalid sampling options")
     if args.device == "cuda" and not torch.cuda.is_available():
         parser.error("CUDA was requested but is not available to PyTorch")
@@ -33,12 +36,13 @@ def main() -> None:
     model = load_model(args.checkpoint, device)
     if tokenizer.vocab_size() != model.config.vocab_size:
         parser.error("tokenizer vocabulary size does not match the checkpoint")
-    completion = generate(model, tokenizer, args.prompt, GenerationConfig(args.max_new_tokens, args.temperature, args.top_k, args.top_p, args.seed), device)
+    rendered_prompt = format_chat_prompt(args.prompt, args.system) if args.chat else args.prompt
+    completion = generate(model, tokenizer, rendered_prompt, GenerationConfig(args.max_new_tokens, args.temperature, args.top_k, args.top_p, args.repetition_penalty, args.seed), device)
     print(completion)
     if args.output:
         path = Path(args.output)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(args.prompt + completion + "\n", encoding="utf-8")
+        path.write_text(rendered_prompt + completion + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
