@@ -24,6 +24,14 @@ except ImportError:
     LigerFusedLinearCrossEntropyLoss = None
 
 
+@torch.compiler.disable
+def fused_linear_cross_entropy(
+    loss_module: nn.Module, weight: torch.Tensor, hidden_states: torch.Tensor, targets: torch.Tensor
+) -> torch.Tensor:
+    """Run Liger eagerly because its custom autograd op is not Dynamo-traceable."""
+    return loss_module(weight, hidden_states, targets)
+
+
 @dataclass(frozen=True)
 class KDAConfig:
     # Compact BPE vocabulary with UTF-8 byte fallback for rare characters.
@@ -333,7 +341,12 @@ class KDALanguageModel(nn.Module):
         if targets is not None and use_fused_cross_entropy:
             if self.fused_loss is None:
                 raise RuntimeError("fused cross entropy requires the liger-kernel cuda extra")
-            loss = self.fused_loss(self.lm_head.weight, hidden_states.reshape(-1, hidden_states.size(-1)), targets.reshape(-1))
+            loss = fused_linear_cross_entropy(
+                self.fused_loss,
+                self.lm_head.weight,
+                hidden_states.reshape(-1, hidden_states.size(-1)),
+                targets.reshape(-1),
+            )
             logits = None
         else:
             logits = self.lm_head(hidden_states)
