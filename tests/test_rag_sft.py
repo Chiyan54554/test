@@ -14,7 +14,8 @@ def test_rag_sft_records_include_context_and_answer() -> None:
         output = Path(directory) / "rag_sft.jsonl"
         write_rag_sft_jsonl(records, str(output))
 
-        assert len(records) == 2
+        assert len(records) == 3
         assert "參考資料" in records[0]["messages"][0]["content"]
-        assert records[0]["messages"][-1]["content"] == "KDA 使用 recurrent state 與 chunkwise kernel。"
-        assert len(output.read_text(encoding="utf-8").splitlines()) == 2
+        assert records[0]["messages"][-1]["content"] == "KDA 使用 recurrent state 與 chunkwise kernel。 [1]"
+        assert records[-1]["kind"] == "rag_refusal"
+        assert len(output.read_text(encoding="utf-8").splitlines()) == 3

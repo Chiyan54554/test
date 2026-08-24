@@ -14,9 +14,11 @@ def main() -> None:
     parser.add_argument("--examples-per-chunk", type=int, default=6)
     parser.add_argument("--context-chars", type=int, default=180)
     parser.add_argument("--answer-chars", type=int, default=180)
+    parser.add_argument("--refusal-ratio", type=float, default=0.25)
+    parser.add_argument("--context-chunks", type=int, default=1)
     args = parser.parse_args()
     try:
-        records = build_rag_sft_records(args.index, args.examples_per_chunk, args.context_chars, args.answer_chars)
+        records = build_rag_sft_records(args.index, args.examples_per_chunk, args.context_chars, args.answer_chars, args.refusal_ratio, args.context_chunks)
         write_rag_sft_jsonl(records, args.output)
     except (OSError, ValueError) as error:
         parser.error(str(error))

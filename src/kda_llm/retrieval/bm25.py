@@ -133,3 +133,25 @@ def render_context(hits: list[RAGHit], max_chars: int = 500) -> str:
         if remaining <= 0:
             break
     return "\n\n".join(sections)
+
+
+def render_cited_answer(hits: list[RAGHit], query: str, max_chars: int = 500) -> str:
+    """Return evidence sentences with inline source markers, without model generation."""
+    if max_chars <= 0:
+        raise ValueError("max chars must be positive")
+    query_terms = set(tokenize(query))
+    sections, remaining = [], max_chars
+    for index, hit in enumerate(hits, start=1):
+        sentences = [sentence.strip() for sentence in re.split(r"(?<=[。！？.!?])\s*", hit.text) if sentence.strip()]
+        best = max(sentences, key=lambda sentence: len(query_terms.intersection(tokenize(sentence))), default=hit.text.strip())
+        answer = f"{best} [{index}]"
+        header = f"[{index}] 來源：{hit.source}\n"
+        if len(header) >= remaining:
+            break
+        answer = answer[: remaining - len(header)].rstrip()
+        if answer:
+            sections.append(header + answer)
+            remaining -= len(header) + len(answer)
+        if remaining <= 0:
+            break
+    return "\n\n".join(sections)

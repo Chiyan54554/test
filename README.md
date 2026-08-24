@@ -206,6 +206,14 @@ uv run kda-generate --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --token
 uv run kda-generate --prompt "什麼是 Kimi Delta Attention？" --rag-index runs/rag/knowledge.json --rag-answer-mode extractive --show-sources --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --tokenizer runs/smoke/tokenizer/chinese.model
 ```
 
+若要更短的可驗證回答，使用 `cited` 模式。它不會載入或呼叫 32M 模型，而是從最高分的段落選出與問題最相關的句子，並以 `[來源編號]` 標記；這是目前技術問答的預設建議。
+
+```bash
+uv run kda-generate --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --tokenizer runs/smoke/tokenizer/chinese.model --prompt "KDA 為什麼適合長序列？" --rag-index runs/rag/knowledge.json --rag-answer-mode cited --show-sources --rag-min-score 1.0
+```
+
+本地 RAG 預設要求最高 BM25 分數至少為 `1.0`；若證據過弱，程式會停止並說明無法可靠回答，而不是生成猜測。不同領域與索引規模的分數不相同，可用 `--rag-min-score 0` 關閉此保護，或先逐步調低門檻。
+
 ### 網路 RAG
 
 加入 `--web-search` 後，預設會從免費的 arXiv 與中文 Wikipedia 查詢論文摘要與百科內容，將來源 URL 放入模型 context，不需要 API key。arXiv 摘要會先以 NLLB 翻成中文，再由 OpenCC 轉為台灣繁體，最後才交給 32M 模型，因此不會要求小型基座自行處理英翻中；第一次使用會下載約 600M 的翻譯模型。先安裝翻譯選用依賴：
@@ -234,13 +242,19 @@ uv run kda-generate --checkpoint runs/rag_sft_clean/checkpoints/kda-sft-epoch-8.
 
 ### RAG-SFT
 
-一般 SFT 不會教模型如何讀取 reference context；對 32M 模型，應在一般 SFT 後再做一段低 learning-rate 的 RAG-SFT。下列一鍵流程會從索引產生「參考資料 + 問題 + 僅依資料回答」的乾淨段落摘要樣本，再以 `1e-5` 做 8 epochs 短期微調：
+一般 SFT 不會教模型如何讀取 reference context；對 32M 模型，應在一般 SFT 後再做一段低 learning-rate 的 RAG-SFT。下列一鍵流程會從索引產生「參考資料 + 問題 + 帶 `[來源]` 的回答」樣本，並預設加入 25% 的資料不足拒答樣本，再以 `1e-5` 做 8 epochs 短期微調：
 
 ```powershell
 uv run kda-rag-sft-pipeline --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --tokenizer runs/smoke/tokenizer/chinese.model --rag-index runs/rag/knowledge.json --device cuda
 ```
 
 最終 checkpoint 位於 `runs/rag_sft/checkpoints/kda-sft-epoch-8.pt`。這是讓模型學會 grounded response 的起始流程；加入更多獨立的高品質技術文件後，重建索引並以 `--no-resume` 重跑，效果會比重複同一份小型知識庫更可靠。
+
+資料庫包含多份互相獨立的文件時，可讓每筆訓練樣本帶入兩個來源，訓練模型輸出多來源標記；`--refusal-ratio` 控制拒答樣本比例。這不會消除 32M 的能力上限，但能顯著降低它在缺乏證據時編造答案的機率：
+
+```bash
+uv run kda-rag-sft-pipeline --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --tokenizer runs/smoke/tokenizer/chinese.model --rag-index runs/rag/knowledge.json --context-chunks 2 --refusal-ratio 0.25 --no-resume --device cuda
+```
 
 ## 擴大基座與資料品質
 

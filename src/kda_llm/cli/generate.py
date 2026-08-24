@@ -11,7 +11,7 @@ import torch
 
 from kda_llm.env import load_env
 from kda_llm.inference import GenerationConfig, format_chat_prompt, generate, load_model, sample_next_token
-from kda_llm.retrieval import DEFAULT_TRANSLATION_MODEL, load_index, render_context, render_web_context, retrieve, search_brave, search_free_knowledge, translate_texts_to_traditional_chinese, translate_web_hits
+from kda_llm.retrieval import DEFAULT_TRANSLATION_MODEL, load_index, render_cited_answer, render_context, render_web_context, retrieve, search_brave, search_free_knowledge, translate_texts_to_traditional_chinese, translate_web_hits
 
 
 def main() -> None:
@@ -31,8 +31,9 @@ def main() -> None:
     parser.add_argument("--rag-index", help="local JSON index created by kda-build-rag")
     parser.add_argument("--rag-top-k", type=int, default=3)
     parser.add_argument("--rag-max-context-chars", type=int, default=256)
+    parser.add_argument("--rag-min-score", type=float, default=1.0, help="minimum local BM25 evidence score; use 0 to disable")
     parser.add_argument("--show-sources", action="store_true")
-    parser.add_argument("--rag-answer-mode", choices=("generate", "extractive"), default="generate", help="generate with context or return retrieved source text directly")
+    parser.add_argument("--rag-answer-mode", choices=("generate", "extractive", "cited"), default="generate", help="generate, return source text, or return cited evidence without generation")
     parser.add_argument("--web-search", action="store_true", help="search arXiv and Chinese Wikipedia before answering")
     parser.add_argument("--web-provider", choices=("academic", "brave"), default="academic")
     parser.add_argument("--web-count", type=int, default=3)
@@ -44,7 +45,7 @@ def main() -> None:
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--output")
     args = parser.parse_args()
-    if args.max_new_tokens <= 0 or args.temperature <= 0 or args.top_k < 0 or not 0 < args.top_p <= 1 or args.repetition_penalty < 1 or args.rag_top_k <= 0 or args.rag_max_context_chars <= 0 or not 1 <= args.web_count <= 20 or args.web_max_context_chars <= 0:
+    if args.max_new_tokens <= 0 or args.temperature <= 0 or args.top_k < 0 or not 0 < args.top_p <= 1 or args.repetition_penalty < 1 or args.rag_top_k <= 0 or args.rag_max_context_chars <= 0 or args.rag_min_score < 0 or not 1 <= args.web_count <= 20 or args.web_max_context_chars <= 0:
         parser.error("invalid sampling options")
     if args.device == "cuda" and not torch.cuda.is_available():
         parser.error("CUDA was requested but is not available to PyTorch")
@@ -59,6 +60,8 @@ def main() -> None:
             parser.error(str(error))
         if not hits:
             parser.error("RAG found no relevant reference chunks")
+        if args.rag_min_score and hits[0].score < args.rag_min_score:
+            parser.error(f"RAG evidence is too weak (best BM25 score {hits[0].score:.2f} < {args.rag_min_score:.2f}); unable to answer reliably")
         contexts.append(render_context(hits, args.rag_max_context_chars))
     if args.web_search:
         try:
@@ -89,10 +92,15 @@ def main() -> None:
     if args.show_sources and web_hits:
         for index, hit in enumerate(web_hits, start=1):
             print(f"[網路 {index}] {hit.title} | {hit.url}")
-    if args.rag_answer_mode == "extractive":
+    if args.rag_answer_mode in {"extractive", "cited"}:
         if not contexts:
-            parser.error("extractive mode requires --rag-index or --web-search")
-        print("\n\n".join(contexts))
+            parser.error("non-generative RAG modes require --rag-index or --web-search")
+        if args.rag_answer_mode == "cited":
+            answers = [render_cited_answer(hits, args.prompt, args.rag_max_context_chars)] if hits else []
+            answers.extend(render_web_context(web_hits, args.web_max_context_chars) for _ in [None] if web_hits)
+            print("\n\n".join(answers))
+        else:
+            print("\n\n".join(contexts))
         return
     model = load_model(args.checkpoint, device)
     if tokenizer.vocab_size() != model.config.vocab_size:

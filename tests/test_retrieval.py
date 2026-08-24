@@ -1,4 +1,4 @@
-from kda_llm.retrieval import render_context, retrieve
+from kda_llm.retrieval import render_cited_answer, render_context, retrieve
 
 
 def test_bm25_returns_the_relevant_technical_chunk() -> None:
@@ -11,3 +11,4 @@ def test_bm25_returns_the_relevant_technical_chunk() -> None:
 
     assert hits[0].source == "kda.md"
     assert "來源：kda.md" in render_context(hits)
+    assert "[1]" in render_cited_answer(hits, "Kimi Delta Attention 的 chunkwise kernel 是什麼？")
