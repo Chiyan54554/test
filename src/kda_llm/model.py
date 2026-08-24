@@ -23,6 +23,13 @@ try:
 except ImportError:
     LigerFusedLinearCrossEntropyLoss = None
 
+try:
+    from liger_kernel.ops.rms_norm import LigerRMSNormFunction
+    from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+except ImportError:
+    LigerRMSNormFunction = None
+    LigerSiLUMulFunction = None
+
 
 @torch.compiler.disable
 def fused_linear_cross_entropy(
@@ -30,6 +37,18 @@ def fused_linear_cross_entropy(
 ) -> torch.Tensor:
     """Run Liger eagerly because its custom autograd op is not Dynamo-traceable."""
     return loss_module(weight, hidden_states, targets)
+
+
+@torch.compiler.disable
+def liger_rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
+    """Keep Liger's custom autograd kernel out of Dynamo's fake-tensor tracing."""
+    return LigerRMSNormFunction.apply(x, weight, eps)
+
+
+@torch.compiler.disable
+def liger_silu_mul(gate: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+    """Fuse SwiGLU's SiLU activation and elementwise product in one CUDA kernel."""
+    return LigerSiLUMulFunction.apply(gate, value)
 
 
 @dataclass(frozen=True)
@@ -57,6 +76,8 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.is_cuda and LigerRMSNormFunction is not None:
+            return liger_rms_norm(x, self.weight, self.eps)
         variance = x.pow(2).mean(dim=-1, keepdim=True)
         return x * torch.rsqrt(variance + self.eps) * self.weight
 
@@ -257,6 +278,8 @@ class SwiGLU(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         value, gate = self.in_proj(x).chunk(2, dim=-1)
+        if x.is_cuda and LigerSiLUMulFunction is not None:
+            return self.out_proj(liger_silu_mul(gate, value))
         return self.out_proj(value * F.silu(gate))
 
 
