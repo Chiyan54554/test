@@ -287,7 +287,7 @@ uv run kda-rag-sft-pipeline --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt
 
 ## 擴大基座與資料品質
 
-32M 模型適合驗證 KDA 架構、訓練流程與 RAG；它不足以在沒有來源時可靠記住廣泛技術知識。下一個實用基座是 [configs/model_100m.json](configs/model_100m.json)：768 hidden size、12 層、6 個 128 維 KDA heads，約 1 億參數，仍維持 `chunk_kda` 所需的 128 維 head。
+32M 模型適合驗證 KDA 架構、訓練流程與 RAG；它不足以在沒有來源時可靠記住廣泛技術知識。可先使用 [configs/model_64m.json](configs/model_64m.json) 做中間驗證：640 hidden size、10 層、5 個 128 維 KDA heads、1,792 FFN 維度，共 64,375,730 個參數，仍維持 `chunk_kda` 所需的 128 維 head。若 64M 在固定評測集上明顯提升，再升至 [configs/model_100m.json](configs/model_100m.json)：768 hidden size、12 層、6 個 128 維 KDA heads，約 1 億參數。
 
 升級模型前，先建立固定的技術領域評測集。continued pretraining 應加入至少 1 億至 3 億 tokens 的高品質、去重技術文件，並保留一部分通用繁中語料避免語言能力退化。之後使用多來源的 context-QA RAG-SFT，而不是反覆訓練同一份文件；只有評測集的 grounded correctness 明顯提升，才值得繼續放大模型或訓練 token budget。
 
