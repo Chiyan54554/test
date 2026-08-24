@@ -10,6 +10,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import torch
@@ -132,15 +133,19 @@ def learning_rate(step: int, total_steps: int, warmup_steps: int, peak_lr: float
     return peak_lr * 0.1 + peak_lr * 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
+def format_duration(seconds: float) -> str:
+    seconds = max(0, round(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:d}:{minutes:02d}:{seconds:02d}"
+
+
 def main() -> None:
+    bootstrap_parser = argparse.ArgumentParser(add_help=False)
+    bootstrap_parser.add_argument("--train-config")
+    bootstrap_args, _ = bootstrap_parser.parse_known_args()
     parser = argparse.ArgumentParser(description="Train a 32M Chinese KDA language model.")
     parser.add_argument("--train-config", help="JSON file containing training hyperparameters")
-    bootstrap_args, _ = parser.parse_known_args()
-    if bootstrap_args.train_config:
-        parser.set_defaults(**load_json_object(
-            bootstrap_args.train_config,
-            {"steps", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "compile", "require_kda_kernel"},
-        ))
     parser.set_defaults(train_data_was_set=False)
     parser.add_argument(
         "--train-data",
@@ -151,7 +156,8 @@ def main() -> None:
     parser.add_argument("--model-config", default="configs/model_32m.json", help="KDA architecture JSON")
     parser.add_argument("--val-data", default="runs/smoke/corpus/valid.bin", help="optional uint16 .bin validation stream")
     parser.add_argument("--out-dir", default="runs/smoke/checkpoints")
-    parser.add_argument("--steps", type=int, default=100000)
+    parser.add_argument("--max-tokens", type=int, help="total training tokens; derives the number of optimizer steps")
+    parser.add_argument("--steps", type=int, help="legacy explicit step count, intended only for smoke tests")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--grad-accum", type=int, default=2)
     parser.add_argument("--seq-len", type=int, default=256)
@@ -162,12 +168,13 @@ def main() -> None:
     parser.add_argument("--eval-every", type=int, default=2000, help="validation interval; 0 disables validation")
     parser.add_argument("--eval-steps", type=int, default=5, help="validation batches per evaluation")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--log-every", type=int, default=20, help="progress update interval in optimizer steps")
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--require-kda-kernel", action=argparse.BooleanOptionalAction, default=True)
     if bootstrap_args.train_config:
         parser.set_defaults(**load_json_object(
             bootstrap_args.train_config,
-            {"steps", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "compile", "require_kda_kernel"},
+            {"max_tokens", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "log_every", "compile", "require_kda_kernel"},
         ))
     args = parser.parse_args()
     args.train_data_was_set = "--train-data" in sys.argv[1:]
@@ -175,6 +182,19 @@ def main() -> None:
     model_config = KDAConfig(**load_json_object(args.model_config, set(KDAConfig.__dataclass_fields__)))
     if args.seq_len > model_config.max_seq_len:
         raise ValueError("seq_len exceeds the model max_seq_len")
+    if args.log_every <= 0:
+        parser.error("--log-every must be a positive integer")
+    tokens_per_step = args.batch_size * args.grad_accum * args.seq_len
+    if args.max_tokens is not None:
+        if args.max_tokens <= 0:
+            parser.error("--max-tokens must be a positive integer")
+        total_steps = math.ceil(args.max_tokens / tokens_per_step)
+    elif args.steps is not None:
+        if args.steps <= 0:
+            parser.error("--steps must be a positive integer")
+        total_steps = args.steps
+    else:
+        parser.error("provide --max-tokens for training, or --steps for a smoke test")
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -203,12 +223,17 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     backend = "chunk_kda" if device.type == "cuda" and chunk_kda is not None else "reference_recurrence"
     print(f"device: {device}; backend: {backend}; compiled: {args.compile}; parameters: {parameter_count(model):,}")
+    print(f"training budget: {args.max_tokens or total_steps * tokens_per_step:,} tokens; steps: {total_steps:,}; tokens/step: {tokens_per_step:,}")
     for (source_path, _), weight in zip(train_sources, train_weights, strict=True):
         print(f"training source: {source_path} ({weight:.1%})")
 
     prefetcher = BatchPrefetcher(train_sources, train_weights, args.batch_size, args.seq_len)
-    for step in range(args.steps):
-        lr = learning_rate(step, args.steps, args.warmup_steps, args.lr)
+    target_tokens = args.max_tokens or total_steps * tokens_per_step
+    started_at = perf_counter()
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    for step in range(total_steps):
+        lr = learning_rate(step, total_steps, args.warmup_steps, args.lr)
         for group in optimizer.param_groups:
             group["lr"] = lr
 
@@ -226,17 +251,34 @@ def main() -> None:
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
-        if step % 1000 == 0:
-            print(f"step {step:6d} | loss {accumulated_loss:.4f} | lr {lr:.2e}")
+        if (step + 1) % args.log_every == 0 or step + 1 == total_steps:
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+                peak_gib = torch.cuda.max_memory_allocated(device) / 1024**3
+            else:
+                peak_gib = 0.0
+            elapsed = perf_counter() - started_at
+            tokens_seen = (step + 1) * tokens_per_step
+            tokens_per_second = tokens_seen / elapsed
+            remaining = max(0, target_tokens - tokens_seen) / tokens_per_second
+            progress = min(1.0, tokens_seen / target_tokens)
+            print(
+                f"progress {progress:6.2%} | step {step + 1:,}/{total_steps:,} | "
+                f"tokens {tokens_seen:,}/{target_tokens:,} | {tokens_per_second:,.0f} tokens/s | "
+                f"ETA {format_duration(remaining)} | VRAM {peak_gib:.2f} GiB | loss {accumulated_loss:.4f} | lr {lr:.2e}",
+                flush=True,
+            )
         if val_tokens is not None and args.eval_every > 0 and step > 0 and step % args.eval_every == 0:
             val_loss = estimate_loss(model, val_tokens, args.batch_size, args.seq_len, device, args.eval_steps)
             print(f"step {step:6d} | validation loss {val_loss:.4f}")
-        if (args.save_every > 0 and (step + 1) % args.save_every == 0) or step + 1 == args.steps:
+        if (args.save_every > 0 and (step + 1) % args.save_every == 0) or step + 1 == total_steps:
             model_to_save = getattr(model, "_orig_mod", model)
             checkpoint = {
                 "model": model_to_save.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "step": step + 1,
+                "tokens_seen": (step + 1) * tokens_per_step,
+                "max_tokens": args.max_tokens,
                 "config": asdict(model_to_save.config),
                 "training_sources": [
                     {"path": source_path, "weight": float(weight)}

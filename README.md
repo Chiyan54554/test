@@ -1,18 +1,32 @@
 # 32M 中文 Kimi Delta Attention 模型
 
+此專案以 **Linux + NVIDIA CUDA** 作為正式訓練與推論環境。正式執行必須使用 `flash-linear-attention` 的 `chunk_kda`；reference recurrence 僅保留給單元測試與開發除錯。
+
+## Linux 部署前檢查
+
+在 Linux GPU 容器或主機內，先確認 NVIDIA runtime，再安裝依賴並驗證 KDA kernel：
+
+```bash
+nvidia-smi
+uv sync --extra cuda --extra data --extra traditional
+uv run kda-doctor
+```
+
+`kda-doctor` 必須輸出 GPU 名稱與 `kda backend`。若失敗，先修正 GPU passthrough、PyTorch CUDA wheel 或 FLA，再開始訓練。
+
 `src/kda_llm/model.py` 是以中文為主的自回歸語言模型，使用多頭 Kimi Delta Attention（KDA）。模型有 32,167,716 個可訓練參數，設定為 8,192 個 BPE 詞彙、512 維 hidden size、9 層與 4 個 128 維 attention heads；輸入與輸出 token embedding 共用權重。
 
 模型包含現代 LLM 元件：Pre-RMSNorm、RoPE、QK Normalization、用於局部上下文的因果 depthwise convolution、KDA 輸出 gate、SwiGLU、權重共用與 residual scaling。
 
 ## Chunkwise KDA Kernel
 
-在具 CUDA 的 Linux 環境，可安裝選用的分塊 KDA backend：
+在 Linux CUDA 環境安裝分塊 KDA backend：
 
 ```powershell
 uv sync --extra cuda
 ```
 
-模型會自動呼叫 `flash-linear-attention` 的 `chunk_kda` kernel。若使用 NVIDIA SM90 以上架構與 CUDA 12.9 以上版本，還可安裝 Moonshot 的 FlashKDA backend，FLA 會自動轉送至更快的實作。CPU 或未安裝 backend 時，模型會使用數學等價的 PyTorch reference recurrence，以方便開發與測試。
+模型會自動呼叫 `flash-linear-attention` 的 `chunk_kda` kernel。若使用 NVIDIA SM90 以上架構與 CUDA 12.9 以上版本，還可安裝 Moonshot 的 FlashKDA backend，FLA 會自動轉送至更快的實作。正式 CUDA 訓練會要求 kernel 可用，避免靜默退回 reference recurrence。
 
 FlashKDA 需要 128 維 KDA heads，因此模型採用 4 個 128 維 head，而不是 8 個 64 維 head。
 
@@ -28,6 +42,8 @@ uv run kda-self-test
 ## 設定檔
 
 可調整的模型架構放在 [configs/model_32m.json](configs/model_32m.json)，訓練超參數放在 [configs/train_gpu.json](configs/train_gpu.json)。複製後改名建立實驗設定；CLI 同名選項會覆寫 JSON 值。`model_32m.json` 的 `vocab_size` 會由 pipeline 自動傳給 tokenizer，必須與 checkpoint 使用的 tokenizer 相同。
+
+正式訓練用 `max_tokens` 決定總訓練量，steps 會由 `batch_size × grad_accum × seq_len` 自動推導。因此調整 batch 或序列長度時，總 token budget 不會改變。`--steps` 僅保留給短暫 smoke test。
 
 ```powershell
 uv run kda-train --model-config configs/model_32m.json --train-config configs/train_gpu.json --train-data data/train.bin --val-data data/valid.bin

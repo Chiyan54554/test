@@ -1,14 +1,15 @@
 {
-  "steps": 100000,
-  "batch_size": 64,
-  "grad_accum": 2,
+  "max_tokens": 1000000000,
+  "batch_size": 256,
+  "grad_accum": 1,
   "seq_len": 256,
-  "lr": 0.0003,
+  "lr": 3e-4,
   "warmup_steps": 200,
-  "save_every": 5000,
-  "eval_every": 2000,
+  "save_every": 1000,
+  "eval_every": 1000,
   "eval_steps": 5,
   "seed": 67,
+  "log_every": 20,
   "compile": true,
   "require_kda_kernel": true
 }

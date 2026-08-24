@@ -80,7 +80,8 @@ def main() -> None:
     parser.add_argument("--clean-min-chars", type=int, default=20)
     parser.add_argument("--clean-max-chars", type=int, default=20_000)
     parser.add_argument("--clean-min-cjk-ratio", type=float, default=0.15)
-    parser.add_argument("--steps", type=int, default=100000)
+    parser.add_argument("--max-tokens", type=int, help="total training tokens; derives optimizer steps")
+    parser.add_argument("--steps", type=int, help="legacy smoke-test step count")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--grad-accum", type=int, default=2)
     parser.add_argument("--seq-len", type=int, default=256)
@@ -96,7 +97,7 @@ def main() -> None:
     args = parser.parse_args()
     training_config = load_json_object(
         args.train_config,
-        {"steps", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "compile", "require_kda_kernel"},
+        {"max_tokens", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "log_every", "compile", "require_kda_kernel"},
     )
     for key, value in training_config.items():
         option = f"--{key.replace('_', '-')}"
@@ -182,11 +183,12 @@ def main() -> None:
     )
     print("\n=== train ===")
     compile_arguments = ("--compile",) if args.compile else ()
+    budget_arguments = ("--max-tokens", str(args.max_tokens)) if args.max_tokens is not None else ("--steps", str(args.steps))
     run_module(
         "kda_llm.cli.train",
         "--train-data", str(train_bin_path),
         "--val-data", str(valid_bin_path),
-        "--steps", str(args.steps),
+        *budget_arguments,
         "--batch-size", str(args.batch_size),
         "--grad-accum", str(args.grad_accum),
         "--seq-len", str(args.seq_len),
