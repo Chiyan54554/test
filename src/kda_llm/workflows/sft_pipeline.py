@@ -22,7 +22,7 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=8e-5)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
-    parser.add_argument("--log-every", type=int, default=20)
+    parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="cuda")
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--fused-cross-entropy", action=argparse.BooleanOptionalAction, default=True)
