@@ -279,7 +279,7 @@ uv run kda-generate --checkpoint runs/rag_sft_clean/checkpoints/kda-sft-epoch-8.
 uv run kda-rag-sft-pipeline --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --tokenizer runs/smoke/tokenizer/chinese.model --rag-index runs/rag/knowledge.json --device cuda
 ```
 
-最終 checkpoint 位於 `runs/rag_sft/checkpoints/kda-sft-epoch-8.pt`。這是讓模型學會 grounded response 的起始流程；加入更多獨立的高品質技術文件後，重建索引並以 `--no-resume` 重跑，效果會比重複同一份小型知識庫更可靠。
+最終 checkpoint 位於 `runs/rag_sft/checkpoints/kda-sft-epoch-8.pt`。這是讓模型學會 grounded response 的起始流程；樣本會混合主題摘要、單一可驗證事實與資料不足拒答。加入更多獨立的高品質技術文件後，重建索引並以 `--no-resume` 重跑，效果會比重複同一份小型知識庫更可靠。
 
 資料庫包含多份互相獨立的文件時，可讓每筆訓練樣本帶入兩個來源，訓練模型輸出多來源標記；`--refusal-ratio` 控制拒答樣本比例。這不會消除 32M 的能力上限，但能顯著降低它在缺乏證據時編造答案的機率：
 

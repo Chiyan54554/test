@@ -9,12 +9,19 @@ from kda_llm.retrieval import load_index
 
 
 QUESTION_TEMPLATES = (
-    "請根據參考資料，簡要說明這個主題。",
-    "請只依據參考資料回答：這段內容的重點是什麼？",
-    "根據參考資料，請以繁體中文整理關鍵資訊。",
-    "請根據參考資料解釋相關的技術設計，不要加入資料外的推測。",
-    "若只能使用參考資料，應如何回答這個主題？",
-    "請將參考資料改寫成簡潔的說明。",
+    "請根據參考資料，簡要說明「{topic}」。",
+    "請只依據參考資料回答：「{topic}」的重點是什麼？",
+    "根據參考資料，請以繁體中文整理「{topic}」的關鍵資訊。",
+    "請根據參考資料解釋「{topic}」的技術設計，不要加入資料外的推測。",
+    "若只能使用參考資料，應如何回答「{topic}」？",
+    "請將參考資料中關於「{topic}」的內容改寫成簡潔說明。",
+)
+
+FACT_QUESTION_TEMPLATES = (
+    "請指出參考資料中一項關於「{topic}」可驗證的事實。",
+    "根據參考資料，「{topic}」如何運作？請只回答資料明示的內容。",
+    "參考資料提到「{topic}」的哪個特性？",
+    "請用一句話整理參考資料對「{topic}」的描述。",
 )
 
 REFUSAL_TEMPLATES = (
@@ -39,6 +46,22 @@ def _answer_from_context(context: str, limit: int) -> str:
     return _truncate(" ".join(lines), limit)
 
 
+def _topic_from_chunk(text: str, source: str) -> str:
+    """Use a document heading when available so questions are anchored to a real topic."""
+    for line in text.splitlines():
+        heading = line.strip().lstrip("#").strip()
+        if heading:
+            return heading[:80]
+    return Path(source).stem.replace("_", " ") or "參考資料中的主題"
+
+
+def _facts_from_context(context: str, limit: int) -> list[str]:
+    """Split source prose into short, independently verifiable answer targets."""
+    prose = _answer_from_context(context, limit * 4)
+    facts = [_truncate(sentence, limit) for sentence in prose.replace("！", "。").replace("？", "。").split("。") if sentence.strip()]
+    return [fact for fact in facts if fact]
+
+
 def build_rag_sft_records(index_path: str, examples_per_chunk: int = 6, context_chars: int = 180, answer_chars: int = 180, refusal_ratio: float = 0.25, context_chunks: int = 1) -> list[dict[str, object]]:
     if examples_per_chunk <= 0 or context_chars <= 0 or answer_chars <= 0 or context_chunks <= 0:
         raise ValueError("RAG-SFT sizes must be positive")
@@ -61,16 +84,30 @@ def build_rag_sft_records(index_path: str, examples_per_chunk: int = 6, context_
             "若資料不足，應回答不知道，不要捏造資料中沒有的事實。\n\n"
             f"參考資料：\n{references}"
         )
+        topic = _topic_from_chunk(chunk["text"], chunk["source"])
+        full_answer = " ".join(f"{text} [{index}]" for index, text in enumerate(answers, start=1))
+        facts = _facts_from_context(contexts[0], answer_chars)
+        if not facts:
+            facts = [answers[0]]
         for index in range(examples_per_chunk):
+            if index < len(QUESTION_TEMPLATES):
+                question = QUESTION_TEMPLATES[index].format(topic=topic)
+                answer = full_answer
+                kind = "rag_summary"
+            else:
+                fact_index = index - len(QUESTION_TEMPLATES)
+                question = FACT_QUESTION_TEMPLATES[fact_index % len(FACT_QUESTION_TEMPLATES)].format(topic=topic)
+                answer = f"{facts[fact_index % len(facts)]} [1]"
+                kind = "rag_fact"
             records.append(
                 {
                     "messages": [
                         {"role": "system", "content": system},
-                        {"role": "user", "content": QUESTION_TEMPLATES[index % len(QUESTION_TEMPLATES)]},
+                        {"role": "user", "content": question},
                         {"role": "assistant", "content": answer},
                     ],
                     "source": chunk["source"],
-                    "kind": "rag_sft",
+                    "kind": kind,
                 }
             )
         for index in range(refusal_count):
