@@ -117,7 +117,8 @@ def main() -> None:
                 text = row.get(source["text_column"])
                 if not isinstance(text, str):
                     continue
-                text = text.strip()
+                # Preserve one downloaded record per line for downstream streaming stages.
+                text = " ".join(text.split())
                 if not text:
                     continue
                 output_file.write(text + "\n")

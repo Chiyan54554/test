@@ -16,6 +16,8 @@ kda-download-hf = "kda_llm.cli.download_hf_data:main"
 kda-prepare-data = "kda_llm.cli.prepare_data:main"
 kda-train = "kda_llm.cli.train:main"
 kda-convert-traditional = "kda_llm.cli.convert_traditional:main"
+kda-clean-corpus = "kda_llm.cli.clean_corpus:main"
+kda-generate = "kda_llm.cli.generate:main"
 kda-pipeline = "kda_llm.cli.pipeline:main"
 
 [build-system]

@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import sys
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
@@ -13,16 +14,23 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from kda_llm.model import KDAConfig, KDALanguageModel, parameter_count
+from kda_llm.model import KDAConfig, KDALanguageModel, chunk_kda, parameter_count
+from kda_llm.config import load_json_object
 
 
-def get_batch(tokens: np.memmap, batch_size: int, seq_len: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+def get_batch(tokens: np.memmap, batch_size: int, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
     if len(tokens) <= seq_len:
         raise ValueError("token stream must be longer than seq_len")
     starts = np.random.randint(0, len(tokens) - seq_len - 1, size=batch_size)
     batch = np.stack([tokens[start : start + seq_len + 1] for start in starts]).astype(np.int64)
-    batch_tensor = torch.from_numpy(batch).to(device, non_blocking=True)
+    batch_tensor = torch.from_numpy(batch)
     return batch_tensor[:, :-1], batch_tensor[:, 1:]
+
+
+def move_batch_to_device(x: torch.Tensor, y: torch.Tensor, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    if device.type == "cuda":
+        x, y = x.pin_memory(), y.pin_memory()
+    return x.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
 
 def load_train_sources(
@@ -73,10 +81,29 @@ def get_weighted_batch(
     weights: np.ndarray,
     batch_size: int,
     seq_len: int,
-    device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     source_index = np.random.choice(len(sources), p=weights)
-    return get_batch(sources[source_index][1], batch_size, seq_len, device)
+    return get_batch(sources[source_index][1], batch_size, seq_len)
+
+
+class BatchPrefetcher:
+    """Prepare the next CPU batch while CUDA processes the current batch."""
+
+    def __init__(self, sources: list[tuple[str, np.memmap]], weights: np.ndarray, batch_size: int, seq_len: int) -> None:
+        self.sources, self.weights = sources, weights
+        self.batch_size, self.seq_len = batch_size, seq_len
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kda-prefetch")
+        self.future: Future[tuple[torch.Tensor, torch.Tensor]] | None = None
+
+    def next(self) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.future is None:
+            self.future = self.executor.submit(get_weighted_batch, self.sources, self.weights, self.batch_size, self.seq_len)
+        batch = self.future.result()
+        self.future = self.executor.submit(get_weighted_batch, self.sources, self.weights, self.batch_size, self.seq_len)
+        return batch
+
+    def close(self) -> None:
+        self.executor.shutdown(wait=True, cancel_futures=True)
 
 
 @torch.no_grad()
@@ -91,7 +118,7 @@ def estimate_loss(
     model.eval()
     losses = []
     for _ in range(steps):
-        x, y = get_batch(tokens, batch_size, seq_len, device)
+        x, y = move_batch_to_device(*get_batch(tokens, batch_size, seq_len), device)
         _, loss = model(x, y)
         losses.append(loss.item())
     model.train()
@@ -107,6 +134,13 @@ def learning_rate(step: int, total_steps: int, warmup_steps: int, peak_lr: float
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train a 32M Chinese KDA language model.")
+    parser.add_argument("--train-config", help="JSON file containing training hyperparameters")
+    bootstrap_args, _ = parser.parse_known_args()
+    if bootstrap_args.train_config:
+        parser.set_defaults(**load_json_object(
+            bootstrap_args.train_config,
+            {"steps", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "compile", "require_kda_kernel"},
+        ))
     parser.set_defaults(train_data_was_set=False)
     parser.add_argument(
         "--train-data",
@@ -114,6 +148,7 @@ def main() -> None:
         help="single uint16 .bin token stream",
     )
     parser.add_argument("--train-sources", help="JSON array of weighted uint16 token streams")
+    parser.add_argument("--model-config", default="configs/model_32m.json", help="KDA architecture JSON")
     parser.add_argument("--val-data", default="runs/smoke/corpus/valid.bin", help="optional uint16 .bin validation stream")
     parser.add_argument("--out-dir", default="runs/smoke/checkpoints")
     parser.add_argument("--steps", type=int, default=100000)
@@ -127,10 +162,18 @@ def main() -> None:
     parser.add_argument("--eval-every", type=int, default=2000, help="validation interval; 0 disables validation")
     parser.add_argument("--eval-steps", type=int, default=5, help="validation batches per evaluation")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--require-kda-kernel", action=argparse.BooleanOptionalAction, default=True)
+    if bootstrap_args.train_config:
+        parser.set_defaults(**load_json_object(
+            bootstrap_args.train_config,
+            {"steps", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "compile", "require_kda_kernel"},
+        ))
     args = parser.parse_args()
     args.train_data_was_set = "--train-data" in sys.argv[1:]
 
-    if args.seq_len > KDAConfig().max_seq_len:
+    model_config = KDAConfig(**load_json_object(args.model_config, set(KDAConfig.__dataclass_fields__)))
+    if args.seq_len > model_config.max_seq_len:
         raise ValueError("seq_len exceeds the model max_seq_len")
 
     torch.manual_seed(args.seed)
@@ -142,6 +185,8 @@ def main() -> None:
     else:
         device_name = args.device
     device = torch.device(device_name)
+    if args.require_kda_kernel and device.type == "cuda" and chunk_kda is None:
+        parser.error("chunk_kda is unavailable; install the cuda extra or pass --no-require-kda-kernel")
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -150,14 +195,18 @@ def main() -> None:
 
     train_sources, train_weights = load_train_sources(args, parser)
     val_tokens = np.memmap(args.val_data, dtype=np.uint16, mode="r") if args.val_data else None
-    model = KDALanguageModel().to(device)
+    model = KDALanguageModel(model_config).to(device)
+    if args.compile:
+        model = torch.compile(model, dynamic=False)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=0.1)
     output_dir = Path(args.out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"device: {device}; parameters: {parameter_count(model):,}")
+    backend = "chunk_kda" if device.type == "cuda" and chunk_kda is not None else "reference_recurrence"
+    print(f"device: {device}; backend: {backend}; compiled: {args.compile}; parameters: {parameter_count(model):,}")
     for (source_path, _), weight in zip(train_sources, train_weights, strict=True):
         print(f"training source: {source_path} ({weight:.1%})")
 
+    prefetcher = BatchPrefetcher(train_sources, train_weights, args.batch_size, args.seq_len)
     for step in range(args.steps):
         lr = learning_rate(step, args.steps, args.warmup_steps, args.lr)
         for group in optimizer.param_groups:
@@ -166,9 +215,7 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
         accumulated_loss = 0.0
         for _ in range(args.grad_accum):
-            x, y = get_weighted_batch(
-                train_sources, train_weights, args.batch_size, args.seq_len, device
-            )
+            x, y = move_batch_to_device(*prefetcher.next(), device)
             amp_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
             with amp_context:
                 _, loss = model(x, y)
@@ -185,11 +232,12 @@ def main() -> None:
             val_loss = estimate_loss(model, val_tokens, args.batch_size, args.seq_len, device, args.eval_steps)
             print(f"step {step:6d} | validation loss {val_loss:.4f}")
         if (args.save_every > 0 and (step + 1) % args.save_every == 0) or step + 1 == args.steps:
+            model_to_save = getattr(model, "_orig_mod", model)
             checkpoint = {
-                "model": model.state_dict(),
+                "model": model_to_save.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "step": step + 1,
-                "config": asdict(model.config),
+                "config": asdict(model_to_save.config),
                 "training_sources": [
                     {"path": source_path, "weight": float(weight)}
                     for (source_path, _), weight in zip(train_sources, train_weights, strict=True)
@@ -198,6 +246,7 @@ def main() -> None:
             checkpoint_path = output_dir / f"kda-step-{step + 1}.pt"
             torch.save(checkpoint, checkpoint_path)
             print(f"saved {checkpoint_path}")
+    prefetcher.close()
 
 
 if __name__ == "__main__":

@@ -48,12 +48,12 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(variance + self.eps) * self.weight
 
 
-def apply_rope(x: torch.Tensor) -> torch.Tensor:
+def apply_rope(x: torch.Tensor, position_offset: int = 0) -> torch.Tensor:
     """Apply rotary positions to [batch, heads, sequence, head_dim] tensors."""
     _, _, seq_len, head_dim = x.shape
     if head_dim % 2:
         raise ValueError("RoPE requires an even head dimension")
-    positions = torch.arange(seq_len, device=x.device, dtype=x.dtype)
+    positions = torch.arange(position_offset, position_offset + seq_len, device=x.device, dtype=x.dtype)
     frequencies = torch.arange(0, head_dim, 2, device=x.device, dtype=x.dtype)
     inv_freq = 1.0 / (10000 ** (frequencies / head_dim))
     angles = torch.outer(positions, inv_freq)
@@ -71,10 +71,27 @@ class CausalDepthwiseConv1d(nn.Module):
         self.kernel_size = kernel_size
         self.conv = nn.Conv1d(channels, channels, kernel_size, groups=channels, bias=True)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, state: torch.Tensor | None = None, use_cache: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         x = x.transpose(1, 2)
-        x = F.pad(x, (self.kernel_size - 1, 0))
-        return self.conv(x).transpose(1, 2)
+        if state is None:
+            convolved = self.conv(F.pad(x, (self.kernel_size - 1, 0)))
+        else:
+            convolved = self.conv(torch.cat((state, x), dim=-1))
+        next_state = None
+        if use_cache:
+            combined = x if state is None else torch.cat((state, x), dim=-1)
+            next_state = combined[..., -(self.kernel_size - 1) :].detach()
+        return convolved.transpose(1, 2), next_state
+
+
+@dataclass
+class KDAAttentionCache:
+    """Per-layer state needed to continue KDA and its causal convolution."""
+
+    recurrent_state: torch.Tensor | None = None
+    conv_state: torch.Tensor | None = None
 
 
 class KimiDeltaAttention(nn.Module):
@@ -100,7 +117,9 @@ class KimiDeltaAttention(nn.Module):
         v: torch.Tensor,
         decay_logits: torch.Tensor,
         beta_logits: torch.Tensor,
-    ) -> torch.Tensor:
+        initial_state: torch.Tensor | None = None,
+        output_final_state: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Dispatch KDA to FLA's chunkwise Triton/FlashKDA backend."""
         # FLA's current Triton KDA kernels expect matching dtypes for all dot
         # operands. Prefer bf16 on CUDA-capable GPUs and cast every kernel input
@@ -120,14 +139,14 @@ class KimiDeltaAttention(nn.Module):
             g=decay.transpose(1, 2).contiguous(),
             beta=beta.transpose(1, 2).contiguous(),
             scale=1.0,
-            output_final_state=False,
+            initial_state=initial_state,
+            output_final_state=output_final_state,
             use_gate_in_kernel=False,
             use_qk_l2norm_in_kernel=True,
             use_beta_sigmoid_in_kernel=False,
         )
-        # FLA returns only output unless output_final_state=True in most versions.
-        output = result[0] if isinstance(result, tuple) else result
-        return output.transpose(1, 2).contiguous()
+        output, final_state = result if isinstance(result, tuple) else (result, None)
+        return output.transpose(1, 2).contiguous(), final_state
 
     @staticmethod
     def _reference_recurrence(
@@ -136,51 +155,71 @@ class KimiDeltaAttention(nn.Module):
         v: torch.Tensor,
         decay_logits: torch.Tensor,
         beta_logits: torch.Tensor,
-    ) -> torch.Tensor:
+        initial_state: torch.Tensor | None = None,
+        output_final_state: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Numerical fallback matching the KDA state update used by the kernel."""
         batch_size, n_heads, seq_len, head_dim = q.shape
         q = F.normalize(q, dim=-1)
         k = F.normalize(k, dim=-1)
         alpha = torch.sigmoid(decay_logits)
         beta = torch.sigmoid(beta_logits).unsqueeze(-1)
-        state = q.new_zeros(batch_size, n_heads, head_dim, head_dim)
+        state = initial_state if initial_state is not None else q.new_zeros(batch_size, n_heads, head_dim, head_dim)
         outputs: list[torch.Tensor] = []
 
         for token_index in range(seq_len):
             k_t = k[:, :, token_index]
             v_t = v[:, :, token_index]
             # KDA: decay key channels before applying the delta-rule erase/write.
-            state = state * alpha[:, :, token_index].unsqueeze(-2)
-            predicted_v = torch.einsum("bhvk,bhk->bhv", state, k_t)
+            state = state * alpha[:, :, token_index].unsqueeze(-1)
+            predicted_v = torch.einsum("bhkv,bhk->bhv", state, k_t)
             residual = beta[:, :, token_index] * (v_t - predicted_v)
-            state = state + residual.unsqueeze(-1) * k_t.unsqueeze(-2)
-            outputs.append(torch.einsum("bhvk,bhk->bhv", state, q[:, :, token_index]))
+            state = state + k_t.unsqueeze(-1) * residual.unsqueeze(-2)
+            outputs.append(torch.einsum("bhkv,bhk->bhv", state, q[:, :, token_index]))
 
-        return torch.stack(outputs, dim=2)
+        return torch.stack(outputs, dim=2), state.detach() if output_final_state else None
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        cache: KDAAttentionCache | None = None,
+        use_cache: bool = False,
+        position_offset: int = 0,
+    ) -> tuple[torch.Tensor, KDAAttentionCache | None]:
         batch_size, seq_len, _ = x.shape
-        q, k, v = self.qkv_conv(self.qkv_proj(x)).chunk(3, dim=-1)
+        qkv, conv_state = self.qkv_conv(
+            self.qkv_proj(x), state=cache.conv_state if cache else None, use_cache=use_cache
+        )
+        q, k, v = qkv.chunk(3, dim=-1)
 
         def split_heads(tensor: torch.Tensor) -> torch.Tensor:
             return tensor.view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
 
         # QK normalization and RoPE are applied before the chunkwise KDA kernel.
-        q = apply_rope(self.q_norm(split_heads(q)))
-        k = apply_rope(self.k_norm(split_heads(k)))
+        q = apply_rope(self.q_norm(split_heads(q)), position_offset)
+        k = apply_rope(self.k_norm(split_heads(k)), position_offset)
         v = split_heads(v)
         decay_logits = split_heads(self.alpha_proj(x))
         beta_logits = self.beta_proj(x).transpose(1, 2)
 
         can_use_kernel = chunk_kda is not None and x.is_cuda and self.head_dim == 128
         if can_use_kernel:
-            y = self._chunk_kernel(q, k, v, decay_logits, beta_logits)
+            y, recurrent_state = self._chunk_kernel(
+                q, k, v, decay_logits, beta_logits,
+                initial_state=cache.recurrent_state if cache else None,
+                output_final_state=use_cache,
+            )
         else:
-            y = self._reference_recurrence(q, k, v, decay_logits, beta_logits)
+            y, recurrent_state = self._reference_recurrence(
+                q, k, v, decay_logits, beta_logits,
+                initial_state=cache.recurrent_state if cache else None,
+                output_final_state=use_cache,
+            )
 
         y = y.transpose(1, 2).contiguous()
         y = y.view(batch_size, seq_len, -1)
-        return self.out_proj(y * F.silu(self.gate_proj(x)))
+        next_cache = KDAAttentionCache(recurrent_state, conv_state) if use_cache else None
+        return self.out_proj(y * F.silu(self.gate_proj(x))), next_cache
 
 
 class SwiGLU(nn.Module):
@@ -203,9 +242,18 @@ class KDABlock(nn.Module):
         self.ffn = SwiGLU(config.d_model, config.ffn_dim)
         self.residual_scale = (2 * config.n_layers) ** -0.5
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.residual_scale * self.attention(self.attn_norm(x))
-        return x + self.residual_scale * self.ffn(self.ffn_norm(x))
+    def forward(
+        self,
+        x: torch.Tensor,
+        cache: KDAAttentionCache | None = None,
+        use_cache: bool = False,
+        position_offset: int = 0,
+    ) -> tuple[torch.Tensor, KDAAttentionCache | None]:
+        attention_output, next_cache = self.attention(
+            self.attn_norm(x), cache=cache, use_cache=use_cache, position_offset=position_offset
+        )
+        x = x + self.residual_scale * attention_output
+        return x + self.residual_scale * self.ffn(self.ffn_norm(x)), next_cache
 
 
 class KDALanguageModel(nn.Module):
@@ -232,21 +280,38 @@ class KDALanguageModel(nn.Module):
             nn.init.zeros_(module.bias)
 
     def forward(
-        self, input_ids: torch.Tensor, targets: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        self,
+        input_ids: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        past_states: list[KDAAttentionCache] | None = None,
+        use_cache: bool = False,
+        position_offset: int = 0,
+    ) -> tuple[torch.Tensor, torch.Tensor | None] | tuple[torch.Tensor, torch.Tensor | None, list[KDAAttentionCache]]:
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape [batch, sequence]")
         if input_ids.size(1) > self.config.max_seq_len:
             raise ValueError(f"sequence length exceeds {self.config.max_seq_len}")
 
         x = self.token_embedding(input_ids)
-        for layer in self.layers:
-            x = layer(x)
+        if past_states is not None and len(past_states) != len(self.layers):
+            raise ValueError("past_states must contain one cache per layer")
+        next_states: list[KDAAttentionCache] = []
+        for index, layer in enumerate(self.layers):
+            x, layer_cache = layer(
+                x,
+                cache=past_states[index] if past_states else None,
+                use_cache=use_cache,
+                position_offset=position_offset,
+            )
+            if layer_cache is not None:
+                next_states.append(layer_cache)
         logits = self.lm_head(self.final_norm(x))
 
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+        if use_cache:
+            return logits, loss, next_states
         return logits, loss
 
 

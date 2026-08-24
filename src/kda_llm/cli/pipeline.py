@@ -11,6 +11,8 @@ from pathlib import Path
 
 import torch
 
+from kda_llm.config import load_json_object
+from kda_llm.model import KDAConfig
 
 def run_module(module: str, *arguments: str) -> None:
     command = [sys.executable, "-m", module, *arguments]
@@ -69,16 +71,22 @@ def split_corpus(input_path: Path, train_path: Path, valid_path: Path, validatio
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the full Chinese KDA training pipeline.")
     parser.add_argument("--sources", default="configs/hf_sources.json", help="weighted Hugging Face source manifest")
+    parser.add_argument("--model-config", default="configs/model_32m.json", help="KDA architecture JSON")
+    parser.add_argument("--train-config", default="configs/train_gpu.json", help="training hyperparameters JSON")
     parser.add_argument("--total-documents", type=int, default=100_000, help="documents to stream before processing")
     parser.add_argument("--progress-every", type=int, default=1000, help="download progress interval in documents")
     parser.add_argument("--work-dir", default="runs/smoke", help="directory for all generated pipeline artifacts")
     parser.add_argument("--validation-ratio", type=float, default=0.01)
+    parser.add_argument("--clean-min-chars", type=int, default=20)
+    parser.add_argument("--clean-max-chars", type=int, default=20_000)
+    parser.add_argument("--clean-min-cjk-ratio", type=float, default=0.15)
     parser.add_argument("--steps", type=int, default=100000)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--grad-accum", type=int, default=2)
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--device", choices=("cuda", "auto", "cpu"), default="cuda")
+    parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--resume",
         action=argparse.BooleanOptionalAction,
@@ -86,6 +94,16 @@ def main() -> None:
         help="reuse completed data preparation stages",
     )
     args = parser.parse_args()
+    training_config = load_json_object(
+        args.train_config,
+        {"steps", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "compile", "require_kda_kernel"},
+    )
+    for key, value in training_config.items():
+        option = f"--{key.replace('_', '-')}"
+        negative_option = f"--no-{key.replace('_', '-')}"
+        if option not in sys.argv[1:] and negative_option not in sys.argv[1:]:
+            setattr(args, key, value)
+    model_config = KDAConfig(**load_json_object(args.model_config, set(KDAConfig.__dataclass_fields__)))
 
     if args.total_documents <= 1:
         parser.error("--total-documents must be greater than 1")
@@ -104,6 +122,8 @@ def main() -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     raw_path = corpus_dir / "raw.txt"
     traditional_path = corpus_dir / "traditional.txt"
+    clean_path = corpus_dir / "clean.txt"
+    clean_stats_path = clean_path.with_suffix(clean_path.suffix + ".stats.json")
     train_text_path = corpus_dir / "train.txt"
     valid_text_path = corpus_dir / "valid.txt"
     tokenizer_prefix = tokenizer_dir / "chinese"
@@ -126,12 +146,23 @@ def main() -> None:
         ),
     )
     run_stage(
+        "clean", state_dir, (clean_path, clean_stats_path), args.resume,
+        lambda: run_module(
+            "kda_llm.cli.clean_corpus", "--input", str(traditional_path), "--output", str(clean_path),
+            "--min-chars", str(args.clean_min_chars), "--max-chars", str(args.clean_max_chars),
+            "--min-cjk-ratio", str(args.clean_min_cjk_ratio), "--progress-every", str(args.progress_every),
+        ),
+    )
+    run_stage(
         "split", state_dir, (train_text_path, valid_text_path), args.resume,
-        lambda: split_corpus(traditional_path, train_text_path, valid_text_path, args.validation_ratio),
+        lambda: split_corpus(clean_path, train_text_path, valid_text_path, args.validation_ratio),
     )
     run_stage(
         "tokenizer", state_dir, (Path(str(tokenizer_prefix) + ".model"), Path(str(tokenizer_prefix) + ".vocab")), args.resume,
-        lambda: run_module("kda_llm.cli.build_tokenizer", "--input", str(train_text_path), "--output", str(tokenizer_prefix)),
+        lambda: run_module(
+            "kda_llm.cli.build_tokenizer", "--input", str(train_text_path), "--output", str(tokenizer_prefix),
+            "--vocab-size", str(model_config.vocab_size),
+        ),
     )
     run_stage(
         "encode_train", state_dir, (train_bin_path,), args.resume,
@@ -150,6 +181,7 @@ def main() -> None:
         ),
     )
     print("\n=== train ===")
+    compile_arguments = ("--compile",) if args.compile else ()
     run_module(
         "kda_llm.cli.train",
         "--train-data", str(train_bin_path),
@@ -159,8 +191,11 @@ def main() -> None:
         "--grad-accum", str(args.grad_accum),
         "--seq-len", str(args.seq_len),
         "--lr", str(args.lr),
+        "--model-config", args.model_config,
+        "--train-config", args.train_config,
         "--device", args.device,
         "--out-dir", str(checkpoint_dir),
+        *compile_arguments,
     )
 
 

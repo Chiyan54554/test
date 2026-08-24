@@ -1,0 +1,14 @@
+{
+  "steps": 100000,
+  "batch_size": 32,
+  "grad_accum": 2,
+  "seq_len": 256,
+  "lr": 0.0003,
+  "warmup_steps": 200,
+  "save_every": 5000,
+  "eval_every": 2000,
+  "eval_steps": 5,
+  "seed": 42,
+  "compile": true,
+  "require_kda_kernel": true
+}

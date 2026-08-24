@@ -25,6 +25,14 @@ uv run kda-self-test
 
 ## 中文 Tokenizer
 
+## 設定檔
+
+可調整的模型架構放在 [configs/model_32m.json](configs/model_32m.json)，訓練超參數放在 [configs/train_gpu.json](configs/train_gpu.json)。複製後改名建立實驗設定；CLI 同名選項會覆寫 JSON 值。`model_32m.json` 的 `vocab_size` 會由 pipeline 自動傳給 tokenizer，必須與 checkpoint 使用的 tokenizer 相同。
+
+```powershell
+uv run kda-train --model-config configs/model_32m.json --train-config configs/train_gpu.json --train-data data/train.bin --val-data data/valid.bin
+```
+
 準備一或多個 UTF-8 編碼的中文預訓練 `.txt` 語料後，建立 8k BPE tokenizer：
 
 ```powershell
@@ -46,6 +54,16 @@ uv run kda-convert-traditional --input data/valid.txt --output data/valid_zh_han
 ```
 
 預設的 OpenCC `s2twp` 模式會進行簡體轉台灣正體及常見慣用詞轉換。接下來以 `train_zh_hant.txt` 建立 tokenizer，並使用轉換後的 train/valid 檔案進行資料編碼。
+
+### 資料清理與去重
+
+在訓練 tokenizer 前，先清理繁體語料。清理器採串流模式，不會把語料全部讀入記憶體；它會正規化 Unicode 與空白、移除控制字元、過濾過短或過長文件、過濾中文比例過低與網址比例過高的內容、排除重複字元垃圾資料，並以 SQLite 暫存索引做精確去重。完成後會產生可追蹤的 JSON 統計報告。
+
+```powershell
+uv run kda-clean-corpus --input data/train_zh_hant.txt --output data/train_clean.txt --min-chars 20 --min-cjk-ratio 0.15
+```
+
+預設適合中文通用預訓練。技術、英文或程式碼比例較高的來源，可降低 `--min-cjk-ratio`。目前只做精確去重；近似去重、個資偵測與更嚴格的品質分類，應在正式大規模訓練前補上。
 
 ### 從 Hugging Face 下載語料
 
@@ -91,6 +109,8 @@ uv run kda-prepare-data --tokenizer tokenizer/chinese.model --input data/valid.t
 uv run kda-train --train-data data/train.bin --val-data data/valid.bin --steps 100 --out-dir checkpoints/smoke
 ```
 
+在正式 CUDA 環境可先用相同的短測試加上 `--compile`，比較訓練 log 的 tokens/sec；若 Triton kernel 出現 graph break 或沒有更快，使用 `--no-compile` 回退即可。訓練器會以背景執行緒預取下一個 batch，將 pinned host memory 非同步傳入 GPU，並在 CUDA 訓練時要求 `chunk_kda` 可用，避免靜默退回較慢的 reference recurrence。
+
 ### 設定多資料集訓練比例
 
 若要精確控制每個資料集的訓練比例，請將每個來源分別編碼成 `.bin` 檔，再使用 weighted source manifest。範例請見 [configs/train_sources.example.json](configs/train_sources.example.json)。`weight` 不必加總為 1，程式會自動正規化；每個 micro-batch 會依權重選取一個來源，因此長期 token 比例會接近設定值。
@@ -105,13 +125,23 @@ uv run kda-train --train-sources configs/train_sources.json --val-data data/vali
 
 開發時可使用 reference fallback；正式長 context 訓練建議在 CUDA 環境安裝 chunkwise KDA backend。
 
+### 生成文字
+
+訓練完成後，使用同一份 tokenizer 與 checkpoint 產生延續文字：
+
+```powershell
+uv run kda-generate --checkpoint runs/smoke/checkpoints/kda-step-100.pt --tokenizer runs/smoke/tokenizer/chinese.model --prompt "人工智慧的未來" --max-new-tokens 128 --temperature 0.8 --top-p 0.95
+```
+
+預設會自動選擇 CUDA；可用 `--device cpu` 除錯。生成器會檢查 checkpoint 與 tokenizer 詞彙大小是否相符，避免錯用 tokenizer。`--top-k 0` 可停用 top-k 過濾。
+
 ## 一鍵流程
 
-若不想手動執行每個步驟，安裝所有需要的選用套件後可直接執行完整流程。它會依序下載限量資料、轉台灣繁體、切分 train/valid、訓練 tokenizer、編碼 token stream，最後執行訓練。
+若不想手動執行每個步驟，安裝所有需要的選用套件後可直接執行完整流程。它會依序下載限量資料、轉台灣繁體、清理與精確去重、切分 train/valid、訓練 tokenizer、編碼 token stream，最後執行訓練。
 
 ```powershell
 uv sync --extra cuda --extra data --extra traditional
-uv run kda-pipeline --total-documents 100000 --progress-every 1000 --steps 100 --work-dir runs/smoke --device cuda
+uv run kda-pipeline --total-documents 100000 --progress-every 1000 --steps 100 --work-dir runs/smoke --device cuda --compile
 ```
 
 所有產物會放在 `runs/smoke/`，原始下載、繁體語料、tokenizer、token stream 與 checkpoint 不會散落在專案根目錄。專案會從 PyTorch 的 CUDA 12.8 wheel index 安裝 `torch`；`--device cuda` 會在 CUDA 無法使用時立即停止，而不會悄悄退回 CPU。先以預設的 100,000 份文件和 100 steps 確認流程；成功後再提高 `--total-documents` 與 `--steps`。
