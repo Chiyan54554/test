@@ -186,7 +186,7 @@ uv run kda-generate --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --token
 
 ## RAG 知識庫
 
-RAG 會在生成前從本地技術文件找出相關段落，將其作為帶來源的參考資料放進對話 prompt，適合補足 32M 模型不熟悉的 KDA、專案或領域知識。將 Markdown 或 UTF-8 文字檔放入一個資料夾後建立索引：
+RAG 會在生成前從本地技術文件找出相關段落，將其作為帶來源的參考資料放進對話 prompt，適合補足 32M 模型不熟悉的 KDA、專案或領域知識。專案已附一份 [knowledge/kda.md](knowledge/kda.md) 作為可直接測試的起始知識庫；也可將論文摘要、設計文件或其他 Markdown/UTF-8 文字檔放入同一資料夾後建立索引：
 
 ```powershell
 uv run kda-build-rag --input knowledge --output runs/rag/knowledge.json
