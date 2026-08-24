@@ -150,14 +150,43 @@ class KimiDeltaAttention(nn.Module):
         self.n_heads = config.n_heads
         self.head_dim = config.head_dim
         self.rope_cache = rope_cache
-        self.qkv_proj = nn.Linear(config.d_model, 3 * config.d_model, bias=False)
+        # One GEMM reads the hidden states once for all KDA input projections.
+        self.input_proj = nn.Linear(config.d_model, 5 * config.d_model + config.n_heads, bias=False)
+        self.alpha_bias = nn.Parameter(torch.zeros(config.d_model))
+        self.beta_bias = nn.Parameter(torch.zeros(config.n_heads))
         self.qkv_conv = CausalDepthwiseConv1d(3 * config.d_model)
         self.q_norm = RMSNorm(self.head_dim)
         self.k_norm = RMSNorm(self.head_dim)
-        self.alpha_proj = nn.Linear(config.d_model, config.d_model)
-        self.beta_proj = nn.Linear(config.d_model, config.n_heads)
-        self.gate_proj = nn.Linear(config.d_model, config.d_model, bias=False)
         self.out_proj = nn.Linear(config.d_model, config.d_model, bias=False)
+
+    def _load_from_state_dict(
+        self,
+        state_dict: dict[str, torch.Tensor],
+        prefix: str,
+        local_metadata: dict[str, object],
+        strict: bool,
+        missing_keys: list[str],
+        unexpected_keys: list[str],
+        error_msgs: list[str],
+    ) -> None:
+        """Upgrade pre-fusion checkpoints without changing their learned function."""
+        fused_weight = prefix + "input_proj.weight"
+        legacy_weights = (
+            prefix + "qkv_proj.weight",
+            prefix + "alpha_proj.weight",
+            prefix + "gate_proj.weight",
+            prefix + "beta_proj.weight",
+        )
+        if fused_weight not in state_dict and all(key in state_dict for key in legacy_weights):
+            state_dict[fused_weight] = torch.cat([state_dict[key] for key in legacy_weights], dim=0)
+            state_dict[prefix + "alpha_bias"] = state_dict[prefix + "alpha_proj.bias"]
+            state_dict[prefix + "beta_bias"] = state_dict[prefix + "beta_proj.bias"]
+
+        for key in (*legacy_weights, prefix + "alpha_proj.bias", prefix + "beta_proj.bias"):
+            state_dict.pop(key, None)
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
 
     def _chunk_kernel(
         self,
@@ -236,9 +265,12 @@ class KimiDeltaAttention(nn.Module):
         position_offset: int = 0,
     ) -> tuple[torch.Tensor, KDAAttentionCache | None]:
         batch_size, seq_len, _ = x.shape
-        qkv, conv_state = self.qkv_conv(
-            self.qkv_proj(x), state=cache.conv_state if cache else None, use_cache=use_cache
+        projected = self.input_proj(x)
+        qkv, decay_logits, gate, beta_logits = projected.split(
+            (3 * self.n_heads * self.head_dim, self.n_heads * self.head_dim, self.n_heads * self.head_dim, self.n_heads),
+            dim=-1,
         )
+        qkv, conv_state = self.qkv_conv(qkv, state=cache.conv_state if cache else None, use_cache=use_cache)
         q, k, v = qkv.chunk(3, dim=-1)
 
         def split_heads(tensor: torch.Tensor) -> torch.Tensor:
@@ -248,8 +280,8 @@ class KimiDeltaAttention(nn.Module):
         q = apply_rope(self.q_norm(split_heads(q)), self.rope_cache, position_offset)
         k = apply_rope(self.k_norm(split_heads(k)), self.rope_cache, position_offset)
         v = split_heads(v)
-        decay_logits = split_heads(self.alpha_proj(x))
-        beta_logits = self.beta_proj(x)
+        decay_logits = split_heads(decay_logits + self.alpha_bias)
+        beta_logits = beta_logits + self.beta_bias
 
         can_use_kernel = chunk_kda is not None and x.is_cuda and self.head_dim == 128
         if can_use_kernel:
@@ -267,7 +299,7 @@ class KimiDeltaAttention(nn.Module):
 
         y = y.reshape(batch_size, seq_len, -1)
         next_cache = KDAAttentionCache(recurrent_state, conv_state) if use_cache else None
-        return self.out_proj(y * F.silu(self.gate_proj(x))), next_cache
+        return self.out_proj(y * F.silu(gate)), next_cache
 
 
 class SwiGLU(nn.Module):

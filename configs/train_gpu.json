@@ -1,6 +1,6 @@
 {
   "max_tokens": 1000000000,
-  "batch_size": 128,
+  "batch_size": 192,
   "grad_accum": 1,
   "seq_len": 256,
   "lr": 3e-4,

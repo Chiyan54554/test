@@ -231,9 +231,16 @@ def main() -> None:
         checkpoint_config = checkpoint.get("config")
         if checkpoint_config is not None and checkpoint_config != asdict(model_config):
             parser.error("checkpoint model config does not match --model-config")
+        # The fused input projection changes optimizer parameter identities. Model
+        # weights are upgraded losslessly, but old Adam moments cannot be mapped
+        # safely, so start fresh optimizer state for those legacy checkpoints.
+        legacy_input_projections = any(key.endswith(".attention.qkv_proj.weight") for key in checkpoint["model"])
         model_to_load = getattr(model, "_orig_mod", model)
         model_to_load.load_state_dict(checkpoint["model"], strict=True)
-        optimizer.load_state_dict(checkpoint["optimizer"])
+        if legacy_input_projections:
+            print("legacy input projections detected; restored model weights and reset optimizer state")
+        else:
+            optimizer.load_state_dict(checkpoint["optimizer"])
         start_step = int(checkpoint.get("step", 0))
         if start_step >= total_steps:
             parser.error("checkpoint step already reaches the requested token budget")
