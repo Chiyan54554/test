@@ -1,0 +1,17 @@
+{
+  "max_tokens": 2000000000,
+  "batch_size": 64,
+  "grad_accum": 2,
+  "seq_len": 256,
+  "lr": 0.0003,
+  "warmup_steps": 400,
+  "save_every": 1000,
+  "eval_every": 1000,
+  "eval_steps": 5,
+  "seed": 67,
+  "log_every": 100,
+  "compile": true,
+  "fused_cross_entropy": true,
+  "fused_optimizer": true,
+  "require_kda_kernel": true
+}

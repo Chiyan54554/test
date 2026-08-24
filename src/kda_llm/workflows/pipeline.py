@@ -87,9 +87,9 @@ def main() -> None:
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     settings = load_json_object(args.train_config, TRAIN_CONFIG_KEYS)
+    if args.steps is not None:
+        settings.pop("max_tokens", None)
     for key, value in settings.items():
-        if key == "max_tokens" and "--steps" in sys.argv[1:]:
-            continue
         if f"--{key.replace('_', '-')}" not in sys.argv[1:] and f"--no-{key.replace('_', '-')}" not in sys.argv[1:]:
             setattr(args, key, value)
     if args.total_documents <= 1 or args.progress_every <= 0 or not 0 < args.validation_ratio < 1:
