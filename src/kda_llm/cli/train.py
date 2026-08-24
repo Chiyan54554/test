@@ -173,6 +173,10 @@ def main() -> None:
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--fused-cross-entropy", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--require-kda-kernel", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--profile-start-step", type=int, help="global optimizer step at which to start the GPU profiler")
+    parser.add_argument("--profile-warmup-steps", type=int, default=5, help="unrecorded profiler warmup steps")
+    parser.add_argument("--profile-steps", type=int, default=0, help="number of GPU profiler steps; 0 disables profiling")
+    parser.add_argument("--profile-dir", default="runs/smoke/profiles", help="directory for profiler traces and summaries")
     if bootstrap_args.train_config:
         parser.set_defaults(**load_json_object(
             bootstrap_args.train_config,
@@ -186,6 +190,8 @@ def main() -> None:
         raise ValueError("seq_len exceeds the model max_seq_len")
     if args.log_every <= 0:
         parser.error("--log-every must be a positive integer")
+    if args.profile_steps < 0 or args.profile_warmup_steps < 0:
+        parser.error("profile step counts must be non-negative")
     tokens_per_step = args.batch_size * args.grad_accum * args.seq_len
     if args.max_tokens is not None:
         if args.max_tokens <= 0:
@@ -249,6 +255,14 @@ def main() -> None:
             parser.error("checkpoint already reaches the requested token budget")
     remaining_steps = math.ceil((target_tokens - tokens_seen) / tokens_per_step)
     final_step = start_step + remaining_steps
+    profile_start_step = args.profile_start_step if args.profile_start_step is not None else start_step
+    profile_end_step = profile_start_step + args.profile_warmup_steps + args.profile_steps
+    if args.profile_steps and device.type != "cuda":
+        parser.error("GPU profiling requires --device cuda")
+    if args.profile_steps and not start_step <= profile_start_step < final_step:
+        parser.error("--profile-start-step must be within the remaining training steps")
+    if args.profile_steps and profile_end_step > final_step:
+        parser.error("profiler warmup and active steps exceed the remaining training steps")
     output_dir = Path(args.out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     backend = "chunk_kda" if device.type == "cuda" and chunk_kda is not None else "reference_recurrence"
@@ -263,10 +277,21 @@ def main() -> None:
     started_at = perf_counter()
     window_started_at = started_at
     window_tokens = 0
+    profiler: torch.profiler.profile | None = None
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     for local_step in range(remaining_steps):
         step = start_step + local_step
+        if args.profile_steps and step == profile_start_step:
+            Path(args.profile_dir).mkdir(parents=True, exist_ok=True)
+            profiler = torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                schedule=torch.profiler.schedule(wait=0, warmup=args.profile_warmup_steps, active=args.profile_steps),
+                record_shapes=True,
+                profile_memory=True,
+            )
+            profiler.__enter__()
+            print(f"GPU profiler started at step {step:,}")
         next_tokens_seen = min(target_tokens, tokens_seen + tokens_per_step)
         lr = learning_rate(next_tokens_seen, target_tokens, args.warmup_steps * tokens_per_step, args.lr)
         for group in optimizer.param_groups:
@@ -287,6 +312,18 @@ def main() -> None:
         optimizer.step()
         window_tokens += tokens_per_step
         tokens_seen = next_tokens_seen
+        if profiler is not None:
+            profiler.step()
+        if profiler is not None and step + 1 == profile_end_step:
+            profiler.__exit__(None, None, None)
+            trace_path = Path(args.profile_dir) / f"trace-step-{profile_start_step}-{profile_end_step}.json"
+            summary_path = Path(args.profile_dir) / f"summary-step-{profile_start_step}-{profile_end_step}.txt"
+            profiler.export_chrome_trace(str(trace_path))
+            summary_path.write_text(
+                profiler.key_averages().table(sort_by="self_cuda_time_total", row_limit=30), encoding="utf-8"
+            )
+            print(f"GPU profiler saved {trace_path} and {summary_path}")
+            profiler = None
 
         if (step + 1) % args.log_every == 0 or local_step + 1 == remaining_steps:
             if device.type == "cuda":

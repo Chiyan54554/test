@@ -89,6 +89,10 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--device", choices=("cuda", "auto", "cpu"), default="cuda")
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--profile-start-step", type=int, help="global optimizer step at which to start the GPU profiler")
+    parser.add_argument("--profile-warmup-steps", type=int, default=5)
+    parser.add_argument("--profile-steps", type=int, default=0)
+    parser.add_argument("--profile-dir", help="directory for profiler traces and summaries")
     parser.add_argument(
         "--resume",
         action=argparse.BooleanOptionalAction,
@@ -98,7 +102,7 @@ def main() -> None:
     args = parser.parse_args()
     training_config = load_json_object(
         args.train_config,
-        {"max_tokens", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "log_every", "compile", "fused_cross_entropy", "require_kda_kernel"},
+        {"max_tokens", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "log_every", "compile", "fused_cross_entropy", "require_kda_kernel", "profile_start_step", "profile_warmup_steps", "profile_steps", "profile_dir"},
     )
     for key, value in training_config.items():
         option = f"--{key.replace('_', '-')}"
@@ -186,6 +190,12 @@ def main() -> None:
     compile_arguments = ("--compile",) if args.compile else ()
     fused_loss_arguments = ("--fused-cross-entropy",) if args.fused_cross_entropy else ()
     resume_arguments = ("--resume-from", args.resume_checkpoint) if args.resume_checkpoint else ()
+    profile_arguments = (
+        "--profile-start-step", str(args.profile_start_step),
+        "--profile-warmup-steps", str(args.profile_warmup_steps),
+        "--profile-steps", str(args.profile_steps),
+        "--profile-dir", args.profile_dir or str(work_dir / "profiles"),
+    ) if args.profile_steps else ()
     budget_arguments = ("--max-tokens", str(args.max_tokens)) if args.max_tokens is not None else ("--steps", str(args.steps))
     run_module(
         "kda_llm.cli.train",
@@ -203,6 +213,7 @@ def main() -> None:
         *compile_arguments,
         *fused_loss_arguments,
         *resume_arguments,
+        *profile_arguments,
     )
 
 
