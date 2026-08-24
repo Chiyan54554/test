@@ -103,12 +103,14 @@ class KimiDeltaAttention(nn.Module):
     ) -> torch.Tensor:
         """Dispatch KDA to FLA's chunkwise Triton/FlashKDA backend."""
         # FLA's current Triton KDA kernels expect matching dtypes for all dot
-        # operands; keep this path in fp32 even when training uses bf16 autocast.
-        q = q.float()
-        k = k.float()
-        v = v.float()
-        decay_logits = decay_logits.float()
-        beta_logits = beta_logits.float()
+        # operands. Prefer bf16 on CUDA-capable GPUs and cast every kernel input
+        # consistently so autocast does not leave mixed fp32/bf16 operands.
+        kernel_dtype = torch.bfloat16 if q.is_cuda and torch.cuda.is_bf16_supported() else q.dtype
+        q = q.to(kernel_dtype)
+        k = k.to(kernel_dtype)
+        v = v.to(kernel_dtype)
+        decay_logits = decay_logits.to(kernel_dtype)
+        beta_logits = beta_logits.to(kernel_dtype)
         decay = torch.log(torch.sigmoid(decay_logits).clamp_min(torch.finfo(decay_logits.dtype).tiny))
         beta = torch.sigmoid(beta_logits)
         result = chunk_kda(
