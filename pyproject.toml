@@ -23,6 +23,7 @@ kda-convert-traditional = "kda_llm.cli.convert_traditional:main"
 kda-clean-corpus = "kda_llm.cli.clean_corpus:main"
 kda-generate = "kda_llm.cli.generate:main"
 kda-build-rag = "kda_llm.cli.build_rag:main"
+kda-build-vector-rag = "kda_llm.cli.build_vector_rag:main"
 kda-build-rag-sft = "kda_llm.cli.build_rag_sft:main"
 kda-rag-sft-pipeline = "kda_llm.cli.rag_sft_pipeline:main"
 kda-doctor = "kda_llm.cli.doctor:main"
@@ -57,5 +58,8 @@ traditional = [
 ]
 translation = [
     "opencc-python-reimplemented>=0.1.7",
+    "transformers>=4.46,<5",
+]
+retrieval = [
     "transformers>=4.46,<5",
 ]

@@ -214,6 +214,35 @@ uv run kda-generate --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --token
 
 本地 RAG 預設要求最高 BM25 分數至少為 `1.0`；若證據過弱，程式會停止並說明無法可靠回答，而不是生成猜測。不同領域與索引規模的分數不相同，可用 `--rag-min-score 0` 關閉此保護，或先逐步調低門檻。
 
+### Hybrid 檢索與驗證
+
+BM25 擅長精確術語，embedding 向量檢索擅長同義說法。先用多語 embedding 建立一次可快取的 `.npz` 向量索引，再以 hybrid 模式融合兩者；可選的 cross-encoder reranker 會只重排候選段落，不會修改來源內容。
+
+```bash
+uv sync --extra cuda --extra retrieval
+uv run kda-build-vector-rag --index runs/rag/knowledge.json --output runs/rag/knowledge.vector.npz --device cuda
+```
+
+`verified` 會先由 KDA 生成，再逐句以來源文字驗證；沒有足夠字詞證據的句子會被移除，若全部不通過就回覆資料不足。`--source-conflict refuse` 會在不同來源對同一重疊主張給出不同數字時停止回答；此為保守的啟發式檢查，不應取代人工判讀。
+
+```bash
+uv run kda-generate \
+  --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt \
+  --tokenizer runs/smoke/tokenizer/chinese.model \
+  --prompt "Kimi Delta Attention 的 chunkwise 演算法有何作用？" \
+  --rag-index runs/rag/knowledge.json \
+  --vector-index runs/rag/knowledge.vector.npz \
+  --retrieval-mode hybrid \
+  --reranker \
+  --source-conflict refuse \
+  --rag-answer-mode verified \
+  --verification-min-overlap 0.5 \
+  --show-sources \
+  --device cuda
+```
+
+預設 embedding 模型為 `intfloat/multilingual-e5-small`，reranker 為 `BAAI/bge-reranker-v2-m3`。兩者第一次使用都會從 Hugging Face 下載；若改用其他 embedding 模型，建立與查詢向量索引時必須使用相同的 `--embedding-model`。
+
 ### 網路 RAG
 
 加入 `--web-search` 後，預設會從免費的 arXiv 與中文 Wikipedia 查詢論文摘要與百科內容，將來源 URL 放入模型 context，不需要 API key。arXiv 摘要會先以 NLLB 翻成中文，再由 OpenCC 轉為台灣繁體，最後才交給 32M 模型，因此不會要求小型基座自行處理英翻中；第一次使用會下載約 600M 的翻譯模型。先安裝翻譯選用依賴：
