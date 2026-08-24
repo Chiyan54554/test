@@ -126,10 +126,10 @@ def estimate_loss(
     return sum(losses) / len(losses)
 
 
-def learning_rate(step: int, total_steps: int, warmup_steps: int, peak_lr: float) -> float:
-    if step < warmup_steps:
-        return peak_lr * (step + 1) / max(1, warmup_steps)
-    progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+def learning_rate(tokens_seen: int, target_tokens: int, warmup_tokens: int, peak_lr: float) -> float:
+    if tokens_seen < warmup_tokens:
+        return peak_lr * tokens_seen / max(1, warmup_tokens)
+    progress = (tokens_seen - warmup_tokens) / max(1, target_tokens - warmup_tokens)
     return peak_lr * 0.1 + peak_lr * 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
@@ -190,13 +190,14 @@ def main() -> None:
     if args.max_tokens is not None:
         if args.max_tokens <= 0:
             parser.error("--max-tokens must be a positive integer")
-        total_steps = math.ceil(args.max_tokens / tokens_per_step)
+        target_tokens = args.max_tokens
     elif args.steps is not None:
         if args.steps <= 0:
             parser.error("--steps must be a positive integer")
-        total_steps = args.steps
+        target_tokens = args.steps * tokens_per_step
     else:
         parser.error("provide --max-tokens for training, or --steps for a smoke test")
+    total_steps = math.ceil(target_tokens / tokens_per_step)
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -224,6 +225,7 @@ def main() -> None:
         model = torch.compile(model, dynamic=False)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=0.1)
     start_step = 0
+    tokens_seen = 0
     if args.resume_from:
         checkpoint = torch.load(args.resume_from, map_location="cpu", weights_only=True)
         if not isinstance(checkpoint, dict) or "model" not in checkpoint or "optimizer" not in checkpoint:
@@ -242,27 +244,31 @@ def main() -> None:
         else:
             optimizer.load_state_dict(checkpoint["optimizer"])
         start_step = int(checkpoint.get("step", 0))
-        if start_step >= total_steps:
-            parser.error("checkpoint step already reaches the requested token budget")
+        tokens_seen = int(checkpoint.get("tokens_seen", start_step * tokens_per_step))
+        if tokens_seen >= target_tokens:
+            parser.error("checkpoint already reaches the requested token budget")
+    remaining_steps = math.ceil((target_tokens - tokens_seen) / tokens_per_step)
+    final_step = start_step + remaining_steps
     output_dir = Path(args.out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     backend = "chunk_kda" if device.type == "cuda" and chunk_kda is not None else "reference_recurrence"
     print(f"device: {device}; backend: {backend}; compiled: {args.compile}; parameters: {parameter_count(model):,}")
-    print(f"training budget: {args.max_tokens or total_steps * tokens_per_step:,} tokens; steps: {total_steps:,}; tokens/step: {tokens_per_step:,}")
+    print(f"training budget: {target_tokens:,} tokens; steps: {final_step:,}; tokens/step: {tokens_per_step:,}")
     if start_step:
-        print(f"resuming from step {start_step:,} ({start_step * tokens_per_step:,} tokens)")
+        print(f"resuming from step {start_step:,} ({tokens_seen:,} tokens)")
     for (source_path, _), weight in zip(train_sources, train_weights, strict=True):
         print(f"training source: {source_path} ({weight:.1%})")
 
     prefetcher = BatchPrefetcher(train_sources, train_weights, args.batch_size, args.seq_len)
-    target_tokens = args.max_tokens or total_steps * tokens_per_step
     started_at = perf_counter()
     window_started_at = started_at
     window_tokens = 0
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
-    for step in range(start_step, total_steps):
-        lr = learning_rate(step, total_steps, args.warmup_steps, args.lr)
+    for local_step in range(remaining_steps):
+        step = start_step + local_step
+        next_tokens_seen = min(target_tokens, tokens_seen + tokens_per_step)
+        lr = learning_rate(next_tokens_seen, target_tokens, args.warmup_steps * tokens_per_step, args.lr)
         for group in optimizer.param_groups:
             group["lr"] = lr
 
@@ -280,20 +286,20 @@ def main() -> None:
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         window_tokens += tokens_per_step
+        tokens_seen = next_tokens_seen
 
-        if (step + 1) % args.log_every == 0 or step + 1 == total_steps:
+        if (step + 1) % args.log_every == 0 or local_step + 1 == remaining_steps:
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
                 peak_gib = torch.cuda.max_memory_allocated(device) / 1024**3
             else:
                 peak_gib = 0.0
             elapsed = perf_counter() - window_started_at
-            tokens_seen = (step + 1) * tokens_per_step
             tokens_per_second = window_tokens / elapsed
             remaining = max(0, target_tokens - tokens_seen) / tokens_per_second
             progress = min(1.0, tokens_seen / target_tokens)
             print(
-                f"progress {progress:6.2%} | step {step + 1:,}/{total_steps:,} | "
+                f"progress {progress:6.2%} | step {step + 1:,}/{final_step:,} | "
                 f"{tokens_per_second:,.0f} tokens/s | "
                 f"ETA {format_duration(remaining)} | VRAM {peak_gib:.2f} GiB | loss {accumulated_loss:.4f} | lr {lr:.2e}",
                 flush=True,
@@ -303,13 +309,13 @@ def main() -> None:
             val_loss = estimate_loss(model, val_tokens, args.batch_size, args.seq_len, device, args.eval_steps)
             print(f"step {step:6d} | validation loss {val_loss:.4f}")
             window_started_at, window_tokens = perf_counter(), 0
-        if (args.save_every > 0 and (step + 1) % args.save_every == 0) or step + 1 == total_steps:
+        if (args.save_every > 0 and (step + 1) % args.save_every == 0) or local_step + 1 == remaining_steps:
             model_to_save = getattr(model, "_orig_mod", model)
             checkpoint = {
                 "model": model_to_save.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "step": step + 1,
-                "tokens_seen": (step + 1) * tokens_per_step,
+                "tokens_seen": tokens_seen,
                 "max_tokens": args.max_tokens,
                 "config": asdict(model_to_save.config),
                 "training_sources": [
