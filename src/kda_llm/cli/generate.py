@@ -11,7 +11,7 @@ import torch
 
 from kda_llm.env import load_env
 from kda_llm.inference import GenerationConfig, format_chat_prompt, generate, load_model, sample_next_token
-from kda_llm.retrieval import load_index, render_context, render_web_context, retrieve, search_brave, search_free_knowledge
+from kda_llm.retrieval import DEFAULT_TRANSLATION_MODEL, load_index, render_context, render_web_context, retrieve, search_brave, search_free_knowledge, translate_texts_to_traditional_chinese, translate_web_hits
 
 
 def main() -> None:
@@ -39,6 +39,8 @@ def main() -> None:
     parser.add_argument("--web-country", default="TW")
     parser.add_argument("--web-language", default="zh-hant")
     parser.add_argument("--web-max-context-chars", type=int, default=256)
+    parser.add_argument("--translate-web-sources", action=argparse.BooleanOptionalAction, default=True, help="translate English web evidence to Traditional Chinese with NLLB")
+    parser.add_argument("--translation-model", default=DEFAULT_TRANSLATION_MODEL)
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--output")
     args = parser.parse_args()
@@ -48,9 +50,6 @@ def main() -> None:
         parser.error("CUDA was requested but is not available to PyTorch")
     device = torch.device("cuda" if args.device == "auto" and torch.cuda.is_available() else "cpu" if args.device == "auto" else args.device)
     tokenizer = spm.SentencePieceProcessor(model_file=args.tokenizer)
-    model = load_model(args.checkpoint, device)
-    if tokenizer.vocab_size() != model.config.vocab_size:
-        parser.error("tokenizer vocabulary size does not match the checkpoint")
     system_prompt = args.system
     hits, web_hits, contexts = [], [], []
     if args.rag_index:
@@ -68,6 +67,14 @@ def main() -> None:
             parser.error(str(error))
         if not web_hits:
             parser.error("web search found no usable result snippets")
+        if args.translate_web_sources:
+            try:
+                web_hits = translate_web_hits(
+                    web_hits,
+                    lambda snippets: translate_texts_to_traditional_chinese(snippets, device, args.translation_model),
+                )
+            except RuntimeError as error:
+                parser.error(str(error))
         contexts.append(render_web_context(web_hits, args.web_max_context_chars))
     if contexts:
         instruction = "請以繁體中文回答；英文專有名詞可保留。僅根據下列參考資料回答；資料不足時請明確回答不知道，不要補充未提供的事實。"
@@ -87,6 +94,9 @@ def main() -> None:
             parser.error("extractive mode requires --rag-index or --web-search")
         print("\n\n".join(contexts))
         return
+    model = load_model(args.checkpoint, device)
+    if tokenizer.vocab_size() != model.config.vocab_size:
+        parser.error("tokenizer vocabulary size does not match the checkpoint")
     completion = generate(model, tokenizer, rendered_prompt, GenerationConfig(args.max_new_tokens, args.temperature, args.top_k, args.top_p, args.repetition_penalty, args.seed), device)
     print(completion)
     if args.output:

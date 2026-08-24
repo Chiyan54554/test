@@ -208,11 +208,19 @@ uv run kda-generate --prompt "什麼是 Kimi Delta Attention？" --rag-index run
 
 ### 網路 RAG
 
-加入 `--web-search` 後，預設會從免費的 arXiv 與中文 Wikipedia 查詢論文摘要與百科內容，將來源 URL 放入模型 context，不需要 API key。一般生成模式會要求模型以繁體中文回答；`--rag-answer-mode extractive` 則刻意保留來源原文以便查證：
+加入 `--web-search` 後，預設會從免費的 arXiv 與中文 Wikipedia 查詢論文摘要與百科內容，將來源 URL 放入模型 context，不需要 API key。arXiv 摘要會先以 NLLB 翻成繁體中文，再交給 32M 模型，因此不會要求小型基座自行處理英翻中；第一次使用會下載約 600M 的翻譯模型。先安裝翻譯選用依賴：
+
+```bash
+uv sync --extra translation
+```
+
+一般生成模式會要求模型以繁體中文回答；`--rag-answer-mode extractive` 會直接回傳已翻譯的來源摘要。若只想保留原文，可加上 `--no-translate-web-sources`：
 
 ```bash
 uv run kda-generate --checkpoint runs/rag_sft_clean/checkpoints/kda-sft-epoch-8.pt --tokenizer runs/smoke/tokenizer/chinese.model --prompt "Kimi Delta Attention 是什麼？" --web-search --show-sources --temperature 0.2 --top-k 20 --top-p 0.8 --repetition-penalty 1.05 --device cuda
 ```
+
+預設翻譯模型為 `facebook/nllb-200-distilled-600M`，使用 `eng_Latn -> zho_Hant`；可用 `--translation-model` 改為本機或 Hugging Face 上相容的 NLLB 模型。NLLB 模型採 `CC-BY-NC`，不可直接用於商業產品。
 
 若要搜尋一般即時網路資訊，指定 `--web-provider brave`。先在 Brave 建立 API key，將 [.env.example](.env.example) 複製為 `.env` 後填入 key；`.env` 已被 Git 忽略，不會提交：
 

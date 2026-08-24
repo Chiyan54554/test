@@ -55,3 +55,6 @@ data = [
 traditional = [
     "opencc-python-reimplemented>=0.1.7",
 ]
+translation = [
+    "transformers>=4.46,<5",
+]
