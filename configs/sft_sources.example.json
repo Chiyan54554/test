@@ -1,0 +1,15 @@
+[
+  {
+    "dataset": "erhwenkuo/alpaca-data-gpt4-chinese-zhtw",
+    "split": "train",
+    "format": "alpaca",
+    "limit": 30000
+  },
+  {
+    "dataset": "liswei/PromptPair-TW",
+    "split": "train",
+    "format": "conversations",
+    "messages_column": "conversations",
+    "limit": 15000
+  }
+]

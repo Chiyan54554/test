@@ -1,0 +1,8 @@
+[
+  {
+    "dataset": "erhwenkuo/alpaca-data-gpt4-chinese-zhtw",
+    "split": "train",
+    "format": "alpaca",
+    "limit": 40000
+  }
+]

@@ -12,5 +12,6 @@
   "log_every": 100,
   "compile": true,
   "fused_cross_entropy": true,
+  "fused_optimizer": true,
   "require_kda_kernel": true
 }

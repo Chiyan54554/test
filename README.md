@@ -14,9 +14,20 @@ uv run kda-doctor
 
 `kda-doctor` 必須輸出 GPU 名稱與 `kda backend`。若失敗，先修正 GPU passthrough、PyTorch CUDA wheel 或 FLA，再開始訓練。
 
-`src/kda_llm/model.py` 是以中文為主的自回歸語言模型，使用多頭 Kimi Delta Attention（KDA）。模型有 32,167,716 個可訓練參數，設定為 8,192 個 BPE 詞彙、512 維 hidden size、9 層與 4 個 128 維 attention heads；輸入與輸出 token embedding 共用權重。
+此專案採 v2 模組化架構。`src/kda_llm/model.py` 保留作為舊程式的相容入口；新開發請從 `models/`、`training/`、`inference/` 與 `workflows/` 匯入。模型有 32,167,716 個可訓練參數，設定為 8,192 個 BPE 詞彙、512 維 hidden size、9 層與 4 個 128 維 attention heads；輸入與輸出 token embedding 共用權重。
 
 模型包含現代 LLM 元件：Pre-RMSNorm、RoPE、QK Normalization、用於局部上下文的因果 depthwise convolution、KDA 輸出 gate、SwiGLU、權重共用與 residual scaling。
+
+```text
+kda_llm/
+  models/     # config、layers、KDA attention、language model、CUDA kernels
+  training/   # memmap input、token scheduler、checkpoint adapter、profiler、engine
+  inference/  # checkpoint loading、sampling、cache-aware generation
+  workflows/  # 下載到訓練的完整 pipeline
+  cli/        # 穩定的 kda-* 指令入口
+```
+
+新版 checkpoint 會標記 `format_version=2`；載入沒有版本欄位的舊 checkpoint 時，會自動轉換舊 KDA projection 權重。舊 projection checkpoint 續訓時會安全重建 AdamW state，避免不正確對應 optimizer moment。
 
 ## Chunkwise KDA Kernel
 
@@ -45,7 +56,7 @@ uv run kda-self-test
 
 正式訓練用 `max_tokens` 決定總訓練量，steps 會由 `batch_size × grad_accum × seq_len` 自動推導。因此調整 batch 或序列長度時，總 token budget 不會改變。`--steps` 僅保留給短暫 smoke test。
 
-`train_gpu.json` 以 16 GB 級 GPU 的保守起點 `batch_size=128`、`seq_len=256` 設定。若有更多可用 VRAM，再逐步提高 micro-batch；出現 CUDA OOM 時先降低 `batch_size`，不要嘗試用 allocator 設定掩蓋真實顯存不足。
+`train_gpu.json` 以 16 GB 級 GPU 的保守起點 `batch_size=160`、`seq_len=256` 設定。若有更多可用 VRAM，再逐步提高 micro-batch；出現 CUDA OOM 時先降低 `batch_size`，不要嘗試用 allocator 設定掩蓋真實顯存不足。
 
 ```powershell
 uv run kda-train --model-config configs/model_32m.json --train-config configs/train_gpu.json --train-data data/train.bin --val-data data/valid.bin
@@ -152,6 +163,23 @@ uv run kda-generate --checkpoint runs/smoke/checkpoints/kda-step-100.pt --tokeni
 ```
 
 預設會自動選擇 CUDA；可用 `--device cpu` 除錯。生成器會檢查 checkpoint 與 tokenizer 詞彙大小是否相符，避免錯用 tokenizer。`--top-k 0` 可停用 top-k 過濾。
+
+## 監督式微調（SFT）
+
+預訓練讓模型學會中文續寫；SFT 讓它學會依指令回答。流程會只對 assistant 回覆計算 loss，使用者訊息和格式 token 會被 mask，不會把「重複 prompt」當成學習目標。SFT 必須沿用預訓練時的 tokenizer 與 checkpoint。
+
+預設的 [configs/sft_sources.json](configs/sft_sources.json) 使用 [alpaca-data-gpt4-chinese-zhtw](https://huggingface.co/datasets/erhwenkuo/alpaca-data-gpt4-chinese-zhtw) 的 40,000 筆台灣繁中資料，採串流下載並在達到額度後停止：
+
+```powershell
+uv sync --extra cuda --extra data --extra traditional
+uv run kda-download-sft --sources configs/sft_sources.json --output runs/sft/raw.jsonl --limit 40000
+uv run kda-prepare-sft --input runs/sft/raw.jsonl --tokenizer runs/smoke/tokenizer/chinese.model --output runs/sft/sft.pt --max-length 512
+uv run kda-sft --checkpoint runs/smoke/checkpoints/kda-step-30000.pt --dataset runs/sft/sft.pt --out-dir runs/sft/checkpoints --device cuda --compile
+```
+
+`kda-sft` 預設跑 2 epochs、learning rate `8e-5`，每個 epoch 都會輸出可直接供 `kda-generate` 使用的 v2 checkpoint。將 `kda-step-30000.pt` 改成實際預訓練完成的 checkpoint 路徑即可。訓練資料與模型均沿用舊權重載入邏輯，因此也能以舊版 checkpoint 開始 SFT。
+
+若已取得 [PromptPair-TW](https://huggingface.co/datasets/liswei/PromptPair-TW) 的存取權並接受其 `CC BY-NC-SA 4.0` 條款，可改用 [configs/sft_sources.example.json](configs/sft_sources.example.json) 的第二個來源；請依資料集頁面條款確認商業使用與衍生資料的限制。每個來源可用 `limit` 控制數量，工具會依內容雜湊去重。
 
 ## 一鍵流程
 
