@@ -208,7 +208,7 @@ uv run kda-generate --prompt "什麼是 Kimi Delta Attention？" --rag-index run
 
 ### 網路 RAG
 
-加入 `--web-search` 後，預設會從免費的 arXiv 與中文 Wikipedia 查詢論文摘要與百科內容，將來源 URL 放入模型 context，不需要 API key：
+加入 `--web-search` 後，預設會從免費的 arXiv 與中文 Wikipedia 查詢論文摘要與百科內容，將來源 URL 放入模型 context，不需要 API key。一般生成模式會要求模型以繁體中文回答；`--rag-answer-mode extractive` 則刻意保留來源原文以便查證：
 
 ```bash
 uv run kda-generate --checkpoint runs/rag_sft_clean/checkpoints/kda-sft-epoch-8.pt --tokenizer runs/smoke/tokenizer/chinese.model --prompt "Kimi Delta Attention 是什麼？" --web-search --show-sources --temperature 0.2 --top-k 20 --top-p 0.8 --repetition-penalty 1.05 --device cuda

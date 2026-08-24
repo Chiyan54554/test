@@ -70,7 +70,7 @@ def main() -> None:
             parser.error("web search found no usable result snippets")
         contexts.append(render_web_context(web_hits, args.web_max_context_chars))
     if contexts:
-        instruction = "僅根據下列參考資料回答；資料不足時請明確回答不知道，不要補充未提供的事實。"
+        instruction = "請以繁體中文回答；英文專有名詞可保留。僅根據下列參考資料回答；資料不足時請明確回答不知道，不要補充未提供的事實。"
         references = "\n\n".join(contexts)
         system_prompt = f"{system_prompt.strip()}\n\n" if system_prompt else ""
         system_prompt += f"{instruction}\n\n參考資料：\n{references}"
