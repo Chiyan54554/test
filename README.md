@@ -171,13 +171,10 @@ uv run kda-generate --checkpoint runs/smoke/checkpoints/kda-step-100.pt --tokeni
 預設的 [configs/sft_sources.json](configs/sft_sources.json) 使用 [alpaca-data-gpt4-chinese-zhtw](https://huggingface.co/datasets/erhwenkuo/alpaca-data-gpt4-chinese-zhtw) 的 40,000 筆台灣繁中資料，採串流下載並在達到額度後停止：
 
 ```powershell
-uv sync --extra cuda --extra data --extra traditional
-uv run kda-download-sft --sources configs/sft_sources.json --output runs/sft/raw.jsonl --limit 40000
-uv run kda-prepare-sft --input runs/sft/raw.jsonl --tokenizer runs/smoke/tokenizer/chinese.model --output runs/sft/sft.pt --max-length 512
-uv run kda-sft --checkpoint runs/smoke/checkpoints/kda-step-30000.pt --dataset runs/sft/sft.pt --out-dir runs/sft/checkpoints --device cuda --compile
+uv run --extra cuda --extra data kda-sft-pipeline --checkpoint runs/smoke/checkpoints/kda-step-30000.pt --tokenizer runs/smoke/tokenizer/chinese.model --device cuda
 ```
 
-`kda-sft` 預設跑 2 epochs、learning rate `8e-5`，每個 epoch 都會輸出可直接供 `kda-generate` 使用的 v2 checkpoint。將 `kda-step-30000.pt` 改成實際預訓練完成的 checkpoint 路徑即可。訓練資料與模型均沿用舊權重載入邏輯，因此也能以舊版 checkpoint 開始 SFT。
+此指令會依序下載、編碼與訓練；預設跑 2 epochs、learning rate `8e-5`，最終 checkpoint 會在 `runs/sft/checkpoints/kda-sft-epoch-2.pt`，可直接供 `kda-generate` 使用。下載或編碼中斷後，用相同指令重跑即可重用已完成階段；使用 `--no-resume` 可強制重做。將 `kda-step-30000.pt` 改成實際預訓練完成的 checkpoint 路徑即可。訓練資料與模型均沿用舊權重載入邏輯，因此也能以舊版 checkpoint 開始 SFT。
 
 若已取得 [PromptPair-TW](https://huggingface.co/datasets/liswei/PromptPair-TW) 的存取權並接受其 `CC BY-NC-SA 4.0` 條款，可改用 [configs/sft_sources.example.json](configs/sft_sources.example.json) 的第二個來源；請依資料集頁面條款確認商業使用與衍生資料的限制。每個來源可用 `limit` 控制數量，工具會依內容雜湊去重。
 
