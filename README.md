@@ -208,11 +208,18 @@ uv run kda-generate --prompt "什麼是 Kimi Delta Attention？" --rag-index run
 
 ### 網路 RAG
 
-加入 `--web-search` 後，每個問題會透過 Brave Search API 搜尋網路，將結果摘要與 URL 放入模型 context。先在 Brave 建立 API key，並只在執行環境設定環境變數，勿將 key 提交到 Git：
+加入 `--web-search` 後，預設會從免費的 arXiv 與中文 Wikipedia 查詢論文摘要與百科內容，將來源 URL 放入模型 context，不需要 API key：
 
 ```bash
-export BRAVE_SEARCH_API_KEY="你的 API key"
-uv run kda-generate --checkpoint runs/rag_sft_clean/checkpoints/kda-sft-epoch-8.pt --tokenizer runs/smoke/tokenizer/chinese.model --prompt "Kimi Delta Attention 的最新技術報告是什麼？" --web-search --show-sources --temperature 0.2 --top-k 20 --top-p 0.8 --repetition-penalty 1.05 --device cuda
+uv run kda-generate --checkpoint runs/rag_sft_clean/checkpoints/kda-sft-epoch-8.pt --tokenizer runs/smoke/tokenizer/chinese.model --prompt "Kimi Delta Attention 是什麼？" --web-search --show-sources --temperature 0.2 --top-k 20 --top-p 0.8 --repetition-penalty 1.05 --device cuda
+```
+
+若要搜尋一般即時網路資訊，指定 `--web-provider brave`。先在 Brave 建立 API key，將 [.env.example](.env.example) 複製為 `.env` 後填入 key；`.env` 已被 Git 忽略，不會提交：
+
+```bash
+cp .env.example .env
+# 編輯 .env：BRAVE_SEARCH_API_KEY=你的 API key
+uv run kda-generate --checkpoint runs/rag_sft_clean/checkpoints/kda-sft-epoch-8.pt --tokenizer runs/smoke/tokenizer/chinese.model --prompt "Kimi Delta Attention 的最新技術報告是什麼？" --web-search --web-provider brave --show-sources --temperature 0.2 --top-k 20 --top-p 0.8 --repetition-penalty 1.05 --device cuda
 ```
 
 網路搜尋是可選功能，啟用後才會對外傳送 prompt。結果摘要與 URL 應視為可查證來源，不代表模型輸出的每句話都已驗證。

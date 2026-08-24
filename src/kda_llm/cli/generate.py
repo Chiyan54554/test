@@ -9,11 +9,13 @@ from pathlib import Path
 import sentencepiece as spm
 import torch
 
+from kda_llm.env import load_env
 from kda_llm.inference import GenerationConfig, format_chat_prompt, generate, load_model, sample_next_token
-from kda_llm.retrieval import load_index, render_context, render_web_context, retrieve, search_brave
+from kda_llm.retrieval import load_index, render_context, render_web_context, retrieve, search_brave, search_free_knowledge
 
 
 def main() -> None:
+    load_env()
     parser = argparse.ArgumentParser(description="Generate Traditional Chinese text from a KDA checkpoint.")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--tokenizer", required=True)
@@ -31,7 +33,8 @@ def main() -> None:
     parser.add_argument("--rag-max-context-chars", type=int, default=256)
     parser.add_argument("--show-sources", action="store_true")
     parser.add_argument("--rag-answer-mode", choices=("generate", "extractive"), default="generate", help="generate with context or return retrieved source text directly")
-    parser.add_argument("--web-search", action="store_true", help="search the web through Brave Search API before answering")
+    parser.add_argument("--web-search", action="store_true", help="search arXiv and Chinese Wikipedia before answering")
+    parser.add_argument("--web-provider", choices=("academic", "brave"), default="academic")
     parser.add_argument("--web-count", type=int, default=3)
     parser.add_argument("--web-country", default="TW")
     parser.add_argument("--web-language", default="zh-hant")
@@ -60,7 +63,7 @@ def main() -> None:
         contexts.append(render_context(hits, args.rag_max_context_chars))
     if args.web_search:
         try:
-            web_hits = search_brave(args.prompt, os.getenv("BRAVE_SEARCH_API_KEY", ""), args.web_count, args.web_country, args.web_language)
+            web_hits = search_free_knowledge(args.prompt, args.web_count) if args.web_provider == "academic" else search_brave(args.prompt, os.getenv("BRAVE_SEARCH_API_KEY", ""), args.web_count, args.web_country, args.web_language)
         except (RuntimeError, ValueError) as error:
             parser.error(str(error))
         if not web_hits:
