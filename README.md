@@ -200,6 +200,23 @@ uv run kda-generate --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --token
 
 目前內建的是零額外依賴的 BM25 檢索器，最適合數百至數萬個 `.md`/`.txt` 片段與明確技術術語。資料量更大或需要同義句語意搜尋時，再改用 embedding model 與向量資料庫。
 
+當模型規模不足以可靠重述技術資料時，使用抽取式模式可完全避開模型幻覺：它會依問題檢索，但直接回傳帶來源的段落，不會進行生成。
+
+```powershell
+uv run kda-generate --prompt "什麼是 Kimi Delta Attention？" --rag-index runs/rag/knowledge.json --rag-answer-mode extractive --show-sources --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --tokenizer runs/smoke/tokenizer/chinese.model
+```
+
+### 網路 RAG
+
+加入 `--web-search` 後，每個問題會透過 Brave Search API 搜尋網路，將結果摘要與 URL 放入模型 context。先在 Brave 建立 API key，並只在執行環境設定環境變數，勿將 key 提交到 Git：
+
+```bash
+export BRAVE_SEARCH_API_KEY="你的 API key"
+uv run kda-generate --checkpoint runs/rag_sft_clean/checkpoints/kda-sft-epoch-8.pt --tokenizer runs/smoke/tokenizer/chinese.model --prompt "Kimi Delta Attention 的最新技術報告是什麼？" --web-search --show-sources --temperature 0.2 --top-k 20 --top-p 0.8 --repetition-penalty 1.05 --device cuda
+```
+
+網路搜尋是可選功能，啟用後才會對外傳送 prompt。結果摘要與 URL 應視為可查證來源，不代表模型輸出的每句話都已驗證。
+
 ### RAG-SFT
 
 一般 SFT 不會教模型如何讀取 reference context；對 32M 模型，應在一般 SFT 後再做一段低 learning-rate 的 RAG-SFT。下列一鍵流程會從索引產生「參考資料 + 問題 + 僅依資料回答」的乾淨段落摘要樣本，再以 `1e-5` 做 8 epochs 短期微調：
@@ -209,6 +226,12 @@ uv run kda-rag-sft-pipeline --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt
 ```
 
 最終 checkpoint 位於 `runs/rag_sft/checkpoints/kda-sft-epoch-8.pt`。這是讓模型學會 grounded response 的起始流程；加入更多獨立的高品質技術文件後，重建索引並以 `--no-resume` 重跑，效果會比重複同一份小型知識庫更可靠。
+
+## 擴大基座與資料品質
+
+32M 模型適合驗證 KDA 架構、訓練流程與 RAG；它不足以在沒有來源時可靠記住廣泛技術知識。下一個實用基座是 [configs/model_100m.json](configs/model_100m.json)：768 hidden size、12 層、6 個 128 維 KDA heads，約 1 億參數，仍維持 `chunk_kda` 所需的 128 維 head。
+
+升級模型前，先建立固定的技術領域評測集。continued pretraining 應加入至少 1 億至 3 億 tokens 的高品質、去重技術文件，並保留一部分通用繁中語料避免語言能力退化。之後使用多來源的 context-QA RAG-SFT，而不是反覆訓練同一份文件；只有評測集的 grounded correctness 明顯提升，才值得繼續放大模型或訓練 token budget。
 
 若已取得 [PromptPair-TW](https://huggingface.co/datasets/liswei/PromptPair-TW) 的存取權並接受其 `CC BY-NC-SA 4.0` 條款，可改用 [configs/sft_sources.example.json](configs/sft_sources.example.json) 的第二個來源；請依資料集頁面條款確認商業使用與衍生資料的限制。每個來源可用 `limit` 控制數量，工具會依內容雜湊去重。
 
