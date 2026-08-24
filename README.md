@@ -184,6 +184,22 @@ SFT checkpoint 生成時必須帶 `--chat`，讓推論 prompt 與訓練對話模
 uv run kda-generate --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --tokenizer runs/smoke/tokenizer/chinese.model --prompt "請用繁體中文介紹 KDA。" --chat --system "請清楚、簡潔地回答問題。" --temperature 0.7 --top-k 40 --top-p 0.9 --repetition-penalty 1.1 --device cuda
 ```
 
+## RAG 知識庫
+
+RAG 會在生成前從本地技術文件找出相關段落，將其作為帶來源的參考資料放進對話 prompt，適合補足 32M 模型不熟悉的 KDA、專案或領域知識。將 Markdown 或 UTF-8 文字檔放入一個資料夾後建立索引：
+
+```powershell
+uv run kda-build-rag --input knowledge --output runs/rag/knowledge.json
+```
+
+生成時帶入索引即可；RAG 會自動啟用對話模板，並要求模型在資料不足時回答不知道。`--show-sources` 會列出實際檢索的文件，便於檢查答案依據。
+
+```powershell
+uv run kda-generate --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --tokenizer runs/smoke/tokenizer/chinese.model --prompt "什麼是 Kimi Delta Attention？" --rag-index runs/rag/knowledge.json --show-sources --temperature 0.4 --top-k 20 --top-p 0.8 --repetition-penalty 1.1 --device cuda
+```
+
+目前內建的是零額外依賴的 BM25 檢索器，最適合數百至數萬個 `.md`/`.txt` 片段與明確技術術語。資料量更大或需要同義句語意搜尋時，再改用 embedding model 與向量資料庫。
+
 若已取得 [PromptPair-TW](https://huggingface.co/datasets/liswei/PromptPair-TW) 的存取權並接受其 `CC BY-NC-SA 4.0` 條款，可改用 [configs/sft_sources.example.json](configs/sft_sources.example.json) 的第二個來源；請依資料集頁面條款確認商業使用與衍生資料的限制。每個來源可用 `limit` 控制數量，工具會依內容雜湊去重。
 
 ## 一鍵流程
