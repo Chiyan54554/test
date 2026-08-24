@@ -12,6 +12,11 @@ from .web import WebHit
 DEFAULT_TRANSLATION_MODEL = "facebook/nllb-200-distilled-600M"
 
 
+def normalize_traditional_chinese(texts: list[str], convert: Callable[[str], str]) -> list[str]:
+    """Apply one consistent Traditional Chinese conversion after translation."""
+    return [convert(text) for text in texts]
+
+
 def translate_texts_to_traditional_chinese(
     texts: list[str],
     device: torch.device,
@@ -24,6 +29,10 @@ def translate_texts_to_traditional_chinese(
         from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
     except ImportError as error:
         raise RuntimeError("web translation requires `uv sync --extra translation`") from error
+    try:
+        from opencc import OpenCC
+    except ImportError as error:
+        raise RuntimeError("Traditional Chinese conversion requires `uv sync --extra translation`") from error
 
     kwargs: dict[str, object] = {}
     if device.type == "cuda":
@@ -37,7 +46,7 @@ def translate_texts_to_traditional_chinese(
                 encoded = tokenizer(texts[start : start + 4], return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
                 generated = model.generate(**encoded, forced_bos_token_id=tokenizer.convert_tokens_to_ids("zho_Hant"), max_new_tokens=384)
                 batches.extend(tokenizer.batch_decode(generated, skip_special_tokens=True))
-        return batches
+        return normalize_traditional_chinese(batches, OpenCC("s2twp").convert)
     finally:
         if "model" in locals():
             del model

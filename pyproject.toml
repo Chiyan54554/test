@@ -56,5 +56,6 @@ traditional = [
     "opencc-python-reimplemented>=0.1.7",
 ]
 translation = [
+    "opencc-python-reimplemented>=0.1.7",
     "transformers>=4.46,<5",
 ]

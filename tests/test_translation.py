@@ -1,6 +1,10 @@
 import pytest
 
-from kda_llm.retrieval import WebHit, translate_web_hits
+from kda_llm.retrieval import WebHit, normalize_traditional_chinese, translate_web_hits
+
+
+def test_normalize_traditional_chinese_converts_each_translation() -> None:
+    assert normalize_traditional_chinese(["比较缓存"], lambda text: text.replace("比较", "比較").replace("缓存", "快取")) == ["比較快取"]
 
 
 def test_translate_web_hits_only_replaces_snippets() -> None:

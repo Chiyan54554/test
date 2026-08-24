@@ -208,7 +208,7 @@ uv run kda-generate --prompt "什麼是 Kimi Delta Attention？" --rag-index run
 
 ### 網路 RAG
 
-加入 `--web-search` 後，預設會從免費的 arXiv 與中文 Wikipedia 查詢論文摘要與百科內容，將來源 URL 放入模型 context，不需要 API key。arXiv 摘要會先以 NLLB 翻成繁體中文，再交給 32M 模型，因此不會要求小型基座自行處理英翻中；第一次使用會下載約 600M 的翻譯模型。先安裝翻譯選用依賴：
+加入 `--web-search` 後，預設會從免費的 arXiv 與中文 Wikipedia 查詢論文摘要與百科內容，將來源 URL 放入模型 context，不需要 API key。arXiv 摘要會先以 NLLB 翻成中文，再由 OpenCC 轉為台灣繁體，最後才交給 32M 模型，因此不會要求小型基座自行處理英翻中；第一次使用會下載約 600M 的翻譯模型。先安裝翻譯選用依賴：
 
 ```bash
 uv sync --extra translation
