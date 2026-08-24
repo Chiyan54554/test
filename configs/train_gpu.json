@@ -9,7 +9,7 @@
   "eval_every": 1000,
   "eval_steps": 5,
   "seed": 67,
-  "log_every": 20,
+  "log_every": 100,
   "compile": true,
   "require_kda_kernel": true
 }
