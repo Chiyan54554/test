@@ -88,10 +88,14 @@ def main() -> None:
     args = parser.parse_args()
     settings = load_json_object(args.train_config, TRAIN_CONFIG_KEYS)
     for key, value in settings.items():
+        if key == "max_tokens" and "--steps" in sys.argv[1:]:
+            continue
         if f"--{key.replace('_', '-')}" not in sys.argv[1:] and f"--no-{key.replace('_', '-')}" not in sys.argv[1:]:
             setattr(args, key, value)
     if args.total_documents <= 1 or args.progress_every <= 0 or not 0 < args.validation_ratio < 1:
         parser.error("invalid document or validation settings")
+    if args.max_tokens is not None and args.steps is not None:
+        parser.error("use either --max-tokens or --steps, not both")
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available to PyTorch")
     model_config = KDAConfig(**load_json_object(args.model_config, set(KDAConfig.__dataclass_fields__)))

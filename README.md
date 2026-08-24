@@ -315,3 +315,11 @@ uv run python -c "import torch; print(torch.__version__); print(torch.version.cu
 ```powershell
 uv run kda-pipeline --total-documents 100000 --steps 100 --work-dir runs/smoke --device cuda --resume
 ```
+
+64M 驗證可使用同一條 pipeline，但務必使用獨立的 work directory，避免和 32M 的 tokenizer、資料狀態與 checkpoint 混在一起：
+
+```bash
+uv run kda-pipeline --model-config configs/model_64m.json --train-config configs/train_gpu.json --total-documents 100000 --steps 100 --work-dir runs/64m_smoke --device cuda --compile
+```
+
+確認 smoke run 的 loss 能下降後，建立更大且授權明確的來源 manifest，再改用 `--max-tokens` 執行正式訓練。`--steps` 與 `--max-tokens` 互斥；前者只用於短測，後者才是正式 token budget。
