@@ -27,7 +27,7 @@ def main() -> None:
     parser.add_argument("--system", help="optional system instruction used with --chat")
     parser.add_argument("--rag-index", help="local JSON index created by kda-build-rag")
     parser.add_argument("--rag-top-k", type=int, default=3)
-    parser.add_argument("--rag-max-context-chars", type=int, default=500)
+    parser.add_argument("--rag-max-context-chars", type=int, default=256)
     parser.add_argument("--show-sources", action="store_true")
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--output")
