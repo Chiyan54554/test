@@ -39,6 +39,7 @@ torch = { index = "pytorch-cu128" }
 [project.optional-dependencies]
 cuda = [
     "flash-linear-attention>=0.5.0",
+    "liger-kernel>=0.6",
 ]
 data = [
     "datasets>=3.0.0",

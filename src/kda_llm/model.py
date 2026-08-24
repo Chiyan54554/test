@@ -18,6 +18,11 @@ try:
 except ImportError:
     chunk_kda = None
 
+try:
+    from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+except ImportError:
+    LigerFusedLinearCrossEntropyLoss = None
+
 
 @dataclass(frozen=True)
 class KDAConfig:
@@ -280,6 +285,7 @@ class KDALanguageModel(nn.Module):
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         # Weight tying saves ~4.2M parameters and is standard for language models.
         self.lm_head.weight = self.token_embedding.weight
+        self.fused_loss = LigerFusedLinearCrossEntropyLoss() if LigerFusedLinearCrossEntropyLoss else None
         self.apply(self._init_weights)
         residual_std = 0.02 / (2 * config.n_layers) ** 0.5
         for layer in self.layers:
@@ -300,6 +306,7 @@ class KDALanguageModel(nn.Module):
         past_states: list[KDAAttentionCache] | None = None,
         use_cache: bool = False,
         position_offset: int = 0,
+        use_fused_cross_entropy: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None] | tuple[torch.Tensor, torch.Tensor | None, list[KDAAttentionCache]]:
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape [batch, sequence]")
@@ -319,11 +326,18 @@ class KDALanguageModel(nn.Module):
             )
             if layer_cache is not None:
                 next_states.append(layer_cache)
-        logits = self.lm_head(self.final_norm(x))
+        hidden_states = self.final_norm(x)
 
         loss = None
-        if targets is not None:
-            loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+        if targets is not None and use_fused_cross_entropy:
+            if self.fused_loss is None:
+                raise RuntimeError("fused cross entropy requires the liger-kernel cuda extra")
+            loss = self.fused_loss(self.lm_head.weight, hidden_states.reshape(-1, hidden_states.size(-1)), targets.reshape(-1))
+            logits = None
+        else:
+            logits = self.lm_head(hidden_states)
+            if targets is not None:
+                loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
         if use_cache:
             return logits, loss, next_states
         return logits, loss

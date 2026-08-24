@@ -97,7 +97,7 @@ def main() -> None:
     args = parser.parse_args()
     training_config = load_json_object(
         args.train_config,
-        {"max_tokens", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "log_every", "compile", "require_kda_kernel"},
+        {"max_tokens", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "log_every", "compile", "fused_cross_entropy", "require_kda_kernel"},
     )
     for key, value in training_config.items():
         option = f"--{key.replace('_', '-')}"
@@ -183,6 +183,7 @@ def main() -> None:
     )
     print("\n=== train ===")
     compile_arguments = ("--compile",) if args.compile else ()
+    fused_loss_arguments = ("--fused-cross-entropy",) if args.fused_cross_entropy else ()
     budget_arguments = ("--max-tokens", str(args.max_tokens)) if args.max_tokens is not None else ("--steps", str(args.steps))
     run_module(
         "kda_llm.cli.train",
@@ -198,6 +199,7 @@ def main() -> None:
         "--device", args.device,
         "--out-dir", str(checkpoint_dir),
         *compile_arguments,
+        *fused_loss_arguments,
     )
 
 

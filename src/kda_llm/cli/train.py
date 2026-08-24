@@ -15,7 +15,7 @@ from time import perf_counter
 import numpy as np
 import torch
 
-from kda_llm.model import KDAConfig, KDALanguageModel, chunk_kda, parameter_count
+from kda_llm.model import KDAConfig, KDALanguageModel, LigerFusedLinearCrossEntropyLoss, chunk_kda, parameter_count
 from kda_llm.config import load_json_object
 
 
@@ -170,11 +170,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--log-every", type=int, default=20, help="progress update interval in optimizer steps")
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--fused-cross-entropy", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--require-kda-kernel", action=argparse.BooleanOptionalAction, default=True)
     if bootstrap_args.train_config:
         parser.set_defaults(**load_json_object(
             bootstrap_args.train_config,
-            {"max_tokens", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "log_every", "compile", "require_kda_kernel"},
+            {"max_tokens", "batch_size", "grad_accum", "seq_len", "lr", "warmup_steps", "save_every", "eval_every", "eval_steps", "seed", "log_every", "compile", "fused_cross_entropy", "require_kda_kernel"},
         ))
     args = parser.parse_args()
     args.train_data_was_set = "--train-data" in sys.argv[1:]
@@ -207,6 +208,8 @@ def main() -> None:
     device = torch.device(device_name)
     if args.require_kda_kernel and device.type == "cuda" and chunk_kda is None:
         parser.error("chunk_kda is unavailable; install the cuda extra or pass --no-require-kda-kernel")
+    if args.fused_cross_entropy and (device.type != "cuda" or LigerFusedLinearCrossEntropyLoss is None):
+        parser.error("fused cross entropy requires Linux CUDA and `uv sync --extra cuda`")
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -245,7 +248,7 @@ def main() -> None:
             x, y = move_batch_to_device(*prefetcher.next(), device)
             amp_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
             with amp_context:
-                _, loss = model(x, y)
+                _, loss = model(x, y, use_fused_cross_entropy=args.fused_cross_entropy)
                 loss = loss / args.grad_accum
             loss.backward()
             accumulated_loss += loss.item()
@@ -267,7 +270,7 @@ def main() -> None:
             progress = min(1.0, tokens_seen / target_tokens)
             print(
                 f"progress {progress:6.2%} | step {step + 1:,}/{total_steps:,} | "
-                f"tokens {tokens_seen:,}/{target_tokens:,} | {tokens_per_second:,.0f} tokens/s | "
+                f"{tokens_per_second:,.0f} tokens/s | "
                 f"ETA {format_duration(remaining)} | VRAM {peak_gib:.2f} GiB | loss {accumulated_loss:.4f} | lr {lr:.2e}",
                 flush=True,
             )
