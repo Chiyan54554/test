@@ -18,7 +18,7 @@ def main() -> None:
     parser.add_argument("--context-chars", type=int, default=180)
     parser.add_argument("--answer-chars", type=int, default=180)
     parser.add_argument("--max-length", type=int, default=512)
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=0.01)

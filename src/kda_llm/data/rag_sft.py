@@ -26,13 +26,19 @@ def _truncate(text: str, limit: int) -> str:
     return text[: boundary + 1 if boundary >= limit // 2 else limit].rstrip()
 
 
+def _answer_from_context(context: str, limit: int) -> str:
+    """Keep source facts while removing Markdown scaffolding from answer targets."""
+    lines = [line.strip().lstrip("- ") for line in context.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    return _truncate(" ".join(lines), limit)
+
+
 def build_rag_sft_records(index_path: str, examples_per_chunk: int = 6, context_chars: int = 180, answer_chars: int = 180) -> list[dict[str, object]]:
     if examples_per_chunk <= 0 or context_chars <= 0 or answer_chars <= 0:
         raise ValueError("RAG-SFT sizes must be positive")
     records = []
     for chunk in load_index(index_path):
         context = _truncate(chunk["text"], context_chars)
-        answer = _truncate(context, answer_chars)
+        answer = _answer_from_context(context, answer_chars)
         if not context or not answer:
             continue
         system = (

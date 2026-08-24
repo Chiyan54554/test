@@ -202,13 +202,13 @@ uv run kda-generate --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --token
 
 ### RAG-SFT
 
-一般 SFT 不會教模型如何讀取 reference context；對 32M 模型，應在一般 SFT 後再做一段低 learning-rate 的 RAG-SFT。下列一鍵流程會從索引產生「參考資料 + 問題 + 僅依資料回答」的 extractive 訓練樣本，再以 `1e-5` 做 20 epochs 短期微調：
+一般 SFT 不會教模型如何讀取 reference context；對 32M 模型，應在一般 SFT 後再做一段低 learning-rate 的 RAG-SFT。下列一鍵流程會從索引產生「參考資料 + 問題 + 僅依資料回答」的乾淨段落摘要樣本，再以 `1e-5` 做 8 epochs 短期微調：
 
 ```powershell
 uv run kda-rag-sft-pipeline --checkpoint runs/sft/checkpoints/kda-sft-epoch-2.pt --tokenizer runs/smoke/tokenizer/chinese.model --rag-index runs/rag/knowledge.json --device cuda
 ```
 
-最終 checkpoint 位於 `runs/rag_sft/checkpoints/kda-sft-epoch-20.pt`。這是讓模型學會 grounded response 的起始流程；加入更多獨立的高品質技術文件後，重建索引並以 `--no-resume` 重跑，效果會比重複同一份小型知識庫更可靠。
+最終 checkpoint 位於 `runs/rag_sft/checkpoints/kda-sft-epoch-8.pt`。這是讓模型學會 grounded response 的起始流程；加入更多獨立的高品質技術文件後，重建索引並以 `--no-resume` 重跑，效果會比重複同一份小型知識庫更可靠。
 
 若已取得 [PromptPair-TW](https://huggingface.co/datasets/liswei/PromptPair-TW) 的存取權並接受其 `CC BY-NC-SA 4.0` 條款，可改用 [configs/sft_sources.example.json](configs/sft_sources.example.json) 的第二個來源；請依資料集頁面條款確認商業使用與衍生資料的限制。每個來源可用 `limit` 控制數量，工具會依內容雜湊去重。
 

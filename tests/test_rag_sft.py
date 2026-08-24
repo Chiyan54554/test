@@ -8,7 +8,7 @@ from kda_llm.data.rag_sft import build_rag_sft_records, write_rag_sft_jsonl
 def test_rag_sft_records_include_context_and_answer() -> None:
     with TemporaryDirectory() as directory:
         index = Path(directory) / "index.json"
-        index.write_text(json.dumps({"version": 1, "chunks": [{"source": "kda.md", "text": "KDA 使用 recurrent state 與 chunkwise kernel。"}]}), encoding="utf-8")
+        index.write_text(json.dumps({"version": 1, "chunks": [{"source": "kda.md", "text": "# KDA\nKDA 使用 recurrent state 與 chunkwise kernel。"}]}), encoding="utf-8")
 
         records = build_rag_sft_records(str(index), examples_per_chunk=2)
         output = Path(directory) / "rag_sft.jsonl"
