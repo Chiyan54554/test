@@ -27,7 +27,7 @@ def translate_texts_to_traditional_chinese(
 
     kwargs: dict[str, object] = {}
     if device.type == "cuda":
-        kwargs["torch_dtype"] = torch.float16
+        kwargs["dtype"] = torch.float16
     try:
         tokenizer = AutoTokenizer.from_pretrained(model_name, src_lang="eng_Latn")
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name, **kwargs).to(device).eval()
