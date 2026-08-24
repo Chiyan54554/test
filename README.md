@@ -176,6 +176,8 @@ uv run --extra cuda --extra data kda-sft-pipeline --checkpoint runs/smoke/checkp
 
 此指令會依序下載、編碼與訓練；預設跑 2 epochs、learning rate `8e-5`，最終 checkpoint 會在 `runs/sft/checkpoints/kda-sft-epoch-2.pt`，可直接供 `kda-generate` 使用。下載或編碼中斷後，用相同指令重跑即可重用已完成階段；使用 `--no-resume` 可強制重做。將 `kda-step-30000.pt` 改成實際預訓練完成的 checkpoint 路徑即可。訓練資料與模型均沿用舊權重載入邏輯，因此也能以舊版 checkpoint 開始 SFT。
 
+顯存不足時，以較小的 `--batch-size` 搭配 `--grad-accum` 維持等效 batch。例如 15.5 GiB GPU 訓練 64M 模型、長度 512 時，建議使用 `--batch-size 8 --grad-accum 4`，等效 batch 仍為 32，但峰值顯存大幅降低。
+
 SFT 訓練必須從預訓練 checkpoint 開始，不要將中斷的 SFT checkpoint 當作新的 base checkpoint。正常情況下，loss 會逐步下降但不應在數百 step 內趨近於 `0.0000`；若發生，先停止訓練並確認使用的是最新版程式。
 
 SFT checkpoint 生成時必須帶 `--chat`，讓推論 prompt 與訓練對話模板一致；重複輸出時可提高 `--repetition-penalty`：

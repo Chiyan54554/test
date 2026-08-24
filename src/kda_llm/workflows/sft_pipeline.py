@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--progress-every", type=int, default=1000)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--grad-accum", type=int, default=1, help="number of micro-batches per optimizer update")
     parser.add_argument("--lr", type=float, default=8e-5)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
@@ -31,7 +32,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.limit <= 0 or args.max_length <= 0 or args.progress_every <= 0:
         parser.error("limit, max length, and progress interval must be positive")
-    if args.epochs <= 0 or args.batch_size <= 0 or args.lr <= 0 or args.log_every <= 0 or not 0 <= args.warmup_ratio < 1:
+    if args.epochs <= 0 or args.batch_size <= 0 or args.grad_accum <= 0 or args.lr <= 0 or args.log_every <= 0 or not 0 <= args.warmup_ratio < 1:
         parser.error("invalid SFT hyperparameters")
 
     work_dir = Path(args.work_dir)
@@ -73,6 +74,7 @@ def main() -> None:
         "--out-dir", str(checkpoint_dir),
         "--epochs", str(args.epochs),
         "--batch-size", str(args.batch_size),
+        "--grad-accum", str(args.grad_accum),
         "--lr", str(args.lr),
         "--weight-decay", str(args.weight_decay),
         "--warmup-ratio", str(args.warmup_ratio),
