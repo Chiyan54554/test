@@ -102,18 +102,26 @@ class KimiDeltaAttention(nn.Module):
         beta_logits: torch.Tensor,
     ) -> torch.Tensor:
         """Dispatch KDA to FLA's chunkwise Triton/FlashKDA backend."""
+        # FLA's current Triton KDA kernels expect matching dtypes for all dot
+        # operands; keep this path in fp32 even when training uses bf16 autocast.
+        q = q.float()
+        k = k.float()
+        v = v.float()
+        decay_logits = decay_logits.float()
+        beta_logits = beta_logits.float()
+        decay = torch.log(torch.sigmoid(decay_logits).clamp_min(torch.finfo(decay_logits.dtype).tiny))
+        beta = torch.sigmoid(beta_logits)
         result = chunk_kda(
             q=q.transpose(1, 2).contiguous(),
             k=k.transpose(1, 2).contiguous(),
             v=v.transpose(1, 2).contiguous(),
-            g=decay_logits.transpose(1, 2).contiguous(),
-            beta=beta_logits.transpose(1, 2).contiguous(),
+            g=decay.transpose(1, 2).contiguous(),
+            beta=beta.transpose(1, 2).contiguous(),
             scale=1.0,
             output_final_state=False,
-            use_gate_in_kernel=True,
+            use_gate_in_kernel=False,
             use_qk_l2norm_in_kernel=True,
-            use_beta_sigmoid_in_kernel=True,
-            safe_gate=True,
+            use_beta_sigmoid_in_kernel=False,
         )
         # FLA returns only output unless output_final_state=True in most versions.
         output = result[0] if isinstance(result, tuple) else result

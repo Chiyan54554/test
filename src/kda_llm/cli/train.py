@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
@@ -27,8 +28,12 @@ def get_batch(tokens: np.memmap, batch_size: int, seq_len: int, device: torch.de
 def load_train_sources(
     args: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> tuple[list[tuple[str, np.memmap]], np.ndarray]:
-    if bool(args.train_data) == bool(args.train_sources):
-        parser.error("provide exactly one of --train-data or --train-sources")
+    if args.train_sources:
+        if args.train_data_was_set:
+            parser.error("provide exactly one of --train-data or --train-sources")
+        args.train_data = None
+    elif not args.train_data:
+        parser.error("provide --train-data or --train-sources")
 
     if args.train_data:
         return [(args.train_data, np.memmap(args.train_data, dtype=np.uint16, mode="r"))], np.array([1.0])
@@ -102,21 +107,28 @@ def learning_rate(step: int, total_steps: int, warmup_steps: int, peak_lr: float
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train a 32M Chinese KDA language model.")
-    parser.add_argument("--train-data", help="single uint16 .bin token stream")
+    parser.set_defaults(train_data_was_set=False)
+    parser.add_argument(
+        "--train-data",
+        default="runs/smoke/corpus/train.bin",
+        help="single uint16 .bin token stream",
+    )
     parser.add_argument("--train-sources", help="JSON array of weighted uint16 token streams")
-    parser.add_argument("--val-data", help="optional uint16 .bin validation stream")
-    parser.add_argument("--out-dir", default="checkpoints")
-    parser.add_argument("--steps", type=int, default=10000)
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--grad-accum", type=int, default=8)
+    parser.add_argument("--val-data", default="runs/smoke/corpus/valid.bin", help="optional uint16 .bin validation stream")
+    parser.add_argument("--out-dir", default="runs/smoke/checkpoints")
+    parser.add_argument("--steps", type=int, default=100000)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--grad-accum", type=int, default=2)
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
-    parser.add_argument("--warmup-steps", type=int, default=500)
-    parser.add_argument("--save-every", type=int, default=1000)
-    parser.add_argument("--eval-every", type=int, default=500)
+    parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="cuda")
+    parser.add_argument("--warmup-steps", type=int, default=200)
+    parser.add_argument("--save-every", type=int, default=5000, help="checkpoint interval; 0 saves only at the end")
+    parser.add_argument("--eval-every", type=int, default=2000, help="validation interval; 0 disables validation")
+    parser.add_argument("--eval-steps", type=int, default=5, help="validation batches per evaluation")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+    args.train_data_was_set = "--train-data" in sys.argv[1:]
 
     if args.seq_len > KDAConfig().max_seq_len:
         raise ValueError("seq_len exceeds the model max_seq_len")
@@ -130,6 +142,10 @@ def main() -> None:
     else:
         device_name = args.device
     device = torch.device(device_name)
+    if device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     use_amp = device.type == "cuda" and torch.cuda.is_bf16_supported()
 
     train_sources, train_weights = load_train_sources(args, parser)
@@ -163,12 +179,12 @@ def main() -> None:
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
-        if step % 20 == 0:
+        if step % 1000 == 0:
             print(f"step {step:6d} | loss {accumulated_loss:.4f} | lr {lr:.2e}")
-        if val_tokens is not None and step > 0 and step % args.eval_every == 0:
-            val_loss = estimate_loss(model, val_tokens, args.batch_size, args.seq_len, device)
+        if val_tokens is not None and args.eval_every > 0 and step > 0 and step % args.eval_every == 0:
+            val_loss = estimate_loss(model, val_tokens, args.batch_size, args.seq_len, device, args.eval_steps)
             print(f"step {step:6d} | validation loss {val_loss:.4f}")
-        if (step + 1) % args.save_every == 0 or step + 1 == args.steps:
+        if (args.save_every > 0 and (step + 1) % args.save_every == 0) or step + 1 == args.steps:
             checkpoint = {
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),

@@ -73,13 +73,18 @@ def main() -> None:
     parser.add_argument("--progress-every", type=int, default=1000, help="download progress interval in documents")
     parser.add_argument("--work-dir", default="runs/smoke", help="directory for all generated pipeline artifacts")
     parser.add_argument("--validation-ratio", type=float, default=0.01)
-    parser.add_argument("--steps", type=int, default=100)
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--grad-accum", type=int, default=8)
+    parser.add_argument("--steps", type=int, default=100000)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--grad-accum", type=int, default=2)
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--device", choices=("cuda", "auto", "cpu"), default="cuda")
-    parser.add_argument("--resume", action="store_true", help="reuse completed data preparation stages")
+    parser.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="reuse completed data preparation stages",
+    )
     args = parser.parse_args()
 
     if args.total_documents <= 1:

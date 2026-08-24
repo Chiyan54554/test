@@ -5,3 +5,9 @@ __pycache__/
 data/
 tokenizer/
 checkpoints/
+runs/
+.hf-cache/
+.tmp/
+.triton-cache/
+.uv-cache/
+uv.lock.local-backup
