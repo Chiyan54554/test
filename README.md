@@ -45,6 +45,8 @@ uv run kda-self-test
 
 正式訓練用 `max_tokens` 決定總訓練量，steps 會由 `batch_size × grad_accum × seq_len` 自動推導。因此調整 batch 或序列長度時，總 token budget 不會改變。`--steps` 僅保留給短暫 smoke test。
 
+`train_gpu.json` 以 16 GB 級 GPU 的保守起點 `batch_size=128`、`seq_len=256` 設定。若有更多可用 VRAM，再逐步提高 micro-batch；出現 CUDA OOM 時先降低 `batch_size`，不要嘗試用 allocator 設定掩蓋真實顯存不足。
+
 ```powershell
 uv run kda-train --model-config configs/model_32m.json --train-config configs/train_gpu.json --train-data data/train.bin --val-data data/valid.bin
 ```
