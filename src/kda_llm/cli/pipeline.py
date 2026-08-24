@@ -76,6 +76,7 @@ def main() -> None:
     parser.add_argument("--total-documents", type=int, default=100_000, help="documents to stream before processing")
     parser.add_argument("--progress-every", type=int, default=1000, help="download progress interval in documents")
     parser.add_argument("--work-dir", default="runs/smoke", help="directory for all generated pipeline artifacts")
+    parser.add_argument("--resume-checkpoint", help="checkpoint path passed to kda-train")
     parser.add_argument("--validation-ratio", type=float, default=0.01)
     parser.add_argument("--clean-min-chars", type=int, default=20)
     parser.add_argument("--clean-max-chars", type=int, default=20_000)
@@ -184,6 +185,7 @@ def main() -> None:
     print("\n=== train ===")
     compile_arguments = ("--compile",) if args.compile else ()
     fused_loss_arguments = ("--fused-cross-entropy",) if args.fused_cross_entropy else ()
+    resume_arguments = ("--resume-from", args.resume_checkpoint) if args.resume_checkpoint else ()
     budget_arguments = ("--max-tokens", str(args.max_tokens)) if args.max_tokens is not None else ("--steps", str(args.steps))
     run_module(
         "kda_llm.cli.train",
@@ -200,6 +202,7 @@ def main() -> None:
         "--out-dir", str(checkpoint_dir),
         *compile_arguments,
         *fused_loss_arguments,
+        *resume_arguments,
     )
 
 

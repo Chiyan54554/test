@@ -156,6 +156,7 @@ def main() -> None:
     parser.add_argument("--model-config", default="configs/model_32m.json", help="KDA architecture JSON")
     parser.add_argument("--val-data", default="runs/smoke/corpus/valid.bin", help="optional uint16 .bin validation stream")
     parser.add_argument("--out-dir", default="runs/smoke/checkpoints")
+    parser.add_argument("--resume-from", help="checkpoint written by kda-train to continue from")
     parser.add_argument("--max-tokens", type=int, help="total training tokens; derives the number of optimizer steps")
     parser.add_argument("--steps", type=int, help="legacy explicit step count, intended only for smoke tests")
     parser.add_argument("--batch-size", type=int, default=32)
@@ -222,11 +223,27 @@ def main() -> None:
     if args.compile:
         model = torch.compile(model, dynamic=False)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=0.1)
+    start_step = 0
+    if args.resume_from:
+        checkpoint = torch.load(args.resume_from, map_location="cpu", weights_only=True)
+        if not isinstance(checkpoint, dict) or "model" not in checkpoint or "optimizer" not in checkpoint:
+            parser.error("--resume-from must point to a kda-train checkpoint")
+        checkpoint_config = checkpoint.get("config")
+        if checkpoint_config is not None and checkpoint_config != asdict(model_config):
+            parser.error("checkpoint model config does not match --model-config")
+        model_to_load = getattr(model, "_orig_mod", model)
+        model_to_load.load_state_dict(checkpoint["model"], strict=True)
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        start_step = int(checkpoint.get("step", 0))
+        if start_step >= total_steps:
+            parser.error("checkpoint step already reaches the requested token budget")
     output_dir = Path(args.out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     backend = "chunk_kda" if device.type == "cuda" and chunk_kda is not None else "reference_recurrence"
     print(f"device: {device}; backend: {backend}; compiled: {args.compile}; parameters: {parameter_count(model):,}")
     print(f"training budget: {args.max_tokens or total_steps * tokens_per_step:,} tokens; steps: {total_steps:,}; tokens/step: {tokens_per_step:,}")
+    if start_step:
+        print(f"resuming from step {start_step:,} ({start_step * tokens_per_step:,} tokens)")
     for (source_path, _), weight in zip(train_sources, train_weights, strict=True):
         print(f"training source: {source_path} ({weight:.1%})")
 
@@ -237,7 +254,7 @@ def main() -> None:
     window_tokens = 0
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
-    for step in range(total_steps):
+    for step in range(start_step, total_steps):
         lr = learning_rate(step, total_steps, args.warmup_steps, args.lr)
         for group in optimizer.param_groups:
             group["lr"] = lr

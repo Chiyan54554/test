@@ -181,6 +181,7 @@ class KimiDeltaAttention(nn.Module):
         k = F.normalize(k, dim=-1).transpose(1, 2)
         v = v.transpose(1, 2)
         decay_logits = decay_logits.transpose(1, 2)
+        beta_logits = beta_logits.transpose(1, 2)
         alpha = torch.sigmoid(decay_logits)
         beta = torch.sigmoid(beta_logits).unsqueeze(-1)
         state = initial_state if initial_state is not None else q.new_zeros(batch_size, n_heads, head_dim, head_dim)
@@ -219,7 +220,7 @@ class KimiDeltaAttention(nn.Module):
         k = apply_rope(self.k_norm(split_heads(k)), self.rope_cache, position_offset)
         v = split_heads(v)
         decay_logits = split_heads(self.alpha_proj(x))
-        beta_logits = self.beta_proj(x).transpose(1, 2)
+        beta_logits = self.beta_proj(x)
 
         can_use_kernel = chunk_kda is not None and x.is_cuda and self.head_dim == 128
         if can_use_kernel:
