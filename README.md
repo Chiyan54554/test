@@ -176,6 +176,8 @@ uv run --extra cuda --extra data kda-sft-pipeline --checkpoint runs/smoke/checkp
 
 此指令會依序下載、編碼與訓練；預設跑 2 epochs、learning rate `8e-5`，最終 checkpoint 會在 `runs/sft/checkpoints/kda-sft-epoch-2.pt`，可直接供 `kda-generate` 使用。下載或編碼中斷後，用相同指令重跑即可重用已完成階段；使用 `--no-resume` 可強制重做。將 `kda-step-30000.pt` 改成實際預訓練完成的 checkpoint 路徑即可。訓練資料與模型均沿用舊權重載入邏輯，因此也能以舊版 checkpoint 開始 SFT。
 
+SFT 訓練必須從預訓練 checkpoint 開始，不要將中斷的 SFT checkpoint 當作新的 base checkpoint。正常情況下，loss 會逐步下降但不應在數百 step 內趨近於 `0.0000`；若發生，先停止訓練並確認使用的是最新版程式。
+
 若已取得 [PromptPair-TW](https://huggingface.co/datasets/liswei/PromptPair-TW) 的存取權並接受其 `CC BY-NC-SA 4.0` 條款，可改用 [configs/sft_sources.example.json](configs/sft_sources.example.json) 的第二個來源；請依資料集頁面條款確認商業使用與衍生資料的限制。每個來源可用 `limit` 控制數量，工具會依內容雜湊去重。
 
 ## 一鍵流程

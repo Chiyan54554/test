@@ -16,6 +16,13 @@ from kda_llm.models.kernels import LigerFusedLinearCrossEntropyLoss
 from .checkpoints import CHECKPOINT_VERSION
 
 
+def next_token_batch(input_ids: torch.Tensor, labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Align answer labels with the preceding token logits for causal training."""
+    if input_ids.ndim != 2 or labels.shape != input_ids.shape or input_ids.size(1) < 2:
+        raise ValueError("SFT tensors must have matching [examples, sequence >= 2] shapes")
+    return input_ids[:, :-1], labels[:, 1:]
+
+
 def run_sft(args: object) -> None:
     device = torch.device("cuda" if args.device == "auto" and torch.cuda.is_available() else "cpu" if args.device == "auto" else args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
@@ -24,7 +31,7 @@ def run_sft(args: object) -> None:
     if not isinstance(artifact, dict) or not isinstance(artifact.get("input_ids"), torch.Tensor) or not isinstance(artifact.get("labels"), torch.Tensor):
         raise ValueError("--dataset must be created by kda-prepare-sft")
     input_ids, labels = artifact["input_ids"].long(), artifact["labels"].long()
-    if input_ids.ndim != 2 or labels.shape != input_ids.shape or not input_ids.size(0):
+    if input_ids.ndim != 2 or labels.shape != input_ids.shape or input_ids.size(1) < 2 or not input_ids.size(0):
         raise ValueError("SFT dataset tensors must be non-empty [examples, sequence] tensors")
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     if not isinstance(checkpoint, dict) or not isinstance(checkpoint.get("config"), dict) or not isinstance(checkpoint.get("model"), dict):
@@ -54,7 +61,8 @@ def run_sft(args: object) -> None:
         order = torch.randperm(input_ids.size(0))
         for start in range(0, input_ids.size(0), args.batch_size):
             indices = order[start : start + args.batch_size]
-            x, y = input_ids[indices].to(device, non_blocking=True), labels[indices].to(device, non_blocking=True)
+            x, y = next_token_batch(input_ids[indices], labels[indices])
+            x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
             progress = step / max(1, total_steps)
             lr = args.lr * min(1.0, (step + 1) / warmup_steps) * (1.0 - 0.9 * progress)
             for group in optimizer.param_groups:
