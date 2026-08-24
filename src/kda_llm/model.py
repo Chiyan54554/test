@@ -48,17 +48,31 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(variance + self.eps) * self.weight
 
 
-def apply_rope(x: torch.Tensor, position_offset: int = 0) -> torch.Tensor:
-    """Apply rotary positions to [batch, heads, sequence, head_dim] tensors."""
-    _, _, seq_len, head_dim = x.shape
+class RotaryCache:
+    """Share RoPE tables across all layers for a fixed CUDA device and dtype."""
+
+    def __init__(self) -> None:
+        self.key: tuple[torch.device, torch.dtype, int] | None = None
+        self.cos = torch.empty(0)
+        self.sin = torch.empty(0)
+
+    def get(self, length: int, head_dim: int, device: torch.device, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+        key = (device, dtype, head_dim)
+        if self.key != key or self.cos.size(0) < length:
+            positions = torch.arange(length, device=device, dtype=dtype)
+            frequencies = torch.arange(0, head_dim, 2, device=device, dtype=dtype)
+            angles = torch.outer(positions, 1.0 / (10000 ** (frequencies / head_dim)))
+            self.cos, self.sin, self.key = angles.cos(), angles.sin(), key
+        return self.cos[:length], self.sin[:length]
+
+
+def apply_rope(x: torch.Tensor, rope_cache: RotaryCache, position_offset: int = 0) -> torch.Tensor:
+    """Apply rotary positions to [batch, sequence, heads, head_dim] tensors."""
+    _, seq_len, _, head_dim = x.shape
     if head_dim % 2:
         raise ValueError("RoPE requires an even head dimension")
-    positions = torch.arange(position_offset, position_offset + seq_len, device=x.device, dtype=x.dtype)
-    frequencies = torch.arange(0, head_dim, 2, device=x.device, dtype=x.dtype)
-    inv_freq = 1.0 / (10000 ** (frequencies / head_dim))
-    angles = torch.outer(positions, inv_freq)
-    cos = angles.cos()[None, None]
-    sin = angles.sin()[None, None]
+    cos, sin = rope_cache.get(position_offset + seq_len, head_dim, x.device, x.dtype)
+    cos, sin = cos[position_offset:][None, :, None], sin[position_offset:][None, :, None]
     x_even, x_odd = x[..., ::2], x[..., 1::2]
     return torch.stack((x_even * cos - x_odd * sin, x_even * sin + x_odd * cos), dim=-1).flatten(-2)
 
@@ -97,10 +111,11 @@ class KDAAttentionCache:
 class KimiDeltaAttention(nn.Module):
     """Multi-head KDA with per-value-channel decay and delta-rule writes."""
 
-    def __init__(self, config: KDAConfig) -> None:
+    def __init__(self, config: KDAConfig, rope_cache: RotaryCache) -> None:
         super().__init__()
         self.n_heads = config.n_heads
         self.head_dim = config.head_dim
+        self.rope_cache = rope_cache
         self.qkv_proj = nn.Linear(config.d_model, 3 * config.d_model, bias=False)
         self.qkv_conv = CausalDepthwiseConv1d(3 * config.d_model)
         self.q_norm = RMSNorm(self.head_dim)
@@ -125,19 +140,16 @@ class KimiDeltaAttention(nn.Module):
         # operands. Prefer bf16 on CUDA-capable GPUs and cast every kernel input
         # consistently so autocast does not leave mixed fp32/bf16 operands.
         kernel_dtype = torch.bfloat16 if q.is_cuda and torch.cuda.is_bf16_supported() else q.dtype
-        q = q.to(kernel_dtype)
-        k = k.to(kernel_dtype)
-        v = v.to(kernel_dtype)
-        decay_logits = decay_logits.to(kernel_dtype)
-        beta_logits = beta_logits.to(kernel_dtype)
+        q, k, v = q.to(kernel_dtype), k.to(kernel_dtype), v.to(kernel_dtype)
+        decay_logits, beta_logits = decay_logits.to(kernel_dtype), beta_logits.to(kernel_dtype)
         decay = torch.log(torch.sigmoid(decay_logits).clamp_min(torch.finfo(decay_logits.dtype).tiny))
         beta = torch.sigmoid(beta_logits)
         result = chunk_kda(
-            q=q.transpose(1, 2).contiguous(),
-            k=k.transpose(1, 2).contiguous(),
-            v=v.transpose(1, 2).contiguous(),
-            g=decay.transpose(1, 2).contiguous(),
-            beta=beta.transpose(1, 2).contiguous(),
+            q=q,
+            k=k,
+            v=v,
+            g=decay,
+            beta=beta,
             scale=1.0,
             initial_state=initial_state,
             output_final_state=output_final_state,
@@ -146,7 +158,7 @@ class KimiDeltaAttention(nn.Module):
             use_beta_sigmoid_in_kernel=False,
         )
         output, final_state = result if isinstance(result, tuple) else (result, None)
-        return output.transpose(1, 2).contiguous(), final_state
+        return output, final_state
 
     @staticmethod
     def _reference_recurrence(
@@ -159,9 +171,11 @@ class KimiDeltaAttention(nn.Module):
         output_final_state: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Numerical fallback matching the KDA state update used by the kernel."""
-        batch_size, n_heads, seq_len, head_dim = q.shape
-        q = F.normalize(q, dim=-1)
-        k = F.normalize(k, dim=-1)
+        batch_size, seq_len, n_heads, head_dim = q.shape
+        q = F.normalize(q, dim=-1).transpose(1, 2)
+        k = F.normalize(k, dim=-1).transpose(1, 2)
+        v = v.transpose(1, 2)
+        decay_logits = decay_logits.transpose(1, 2)
         alpha = torch.sigmoid(decay_logits)
         beta = torch.sigmoid(beta_logits).unsqueeze(-1)
         state = initial_state if initial_state is not None else q.new_zeros(batch_size, n_heads, head_dim, head_dim)
@@ -177,7 +191,7 @@ class KimiDeltaAttention(nn.Module):
             state = state + k_t.unsqueeze(-1) * residual.unsqueeze(-2)
             outputs.append(torch.einsum("bhkv,bhk->bhv", state, q[:, :, token_index]))
 
-        return torch.stack(outputs, dim=2), state.detach() if output_final_state else None
+        return torch.stack(outputs, dim=2).transpose(1, 2), state.detach() if output_final_state else None
 
     def forward(
         self,
@@ -193,11 +207,11 @@ class KimiDeltaAttention(nn.Module):
         q, k, v = qkv.chunk(3, dim=-1)
 
         def split_heads(tensor: torch.Tensor) -> torch.Tensor:
-            return tensor.view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+            return tensor.view(batch_size, seq_len, self.n_heads, self.head_dim)
 
         # QK normalization and RoPE are applied before the chunkwise KDA kernel.
-        q = apply_rope(self.q_norm(split_heads(q)), position_offset)
-        k = apply_rope(self.k_norm(split_heads(k)), position_offset)
+        q = apply_rope(self.q_norm(split_heads(q)), self.rope_cache, position_offset)
+        k = apply_rope(self.k_norm(split_heads(k)), self.rope_cache, position_offset)
         v = split_heads(v)
         decay_logits = split_heads(self.alpha_proj(x))
         beta_logits = self.beta_proj(x).transpose(1, 2)
@@ -216,8 +230,7 @@ class KimiDeltaAttention(nn.Module):
                 output_final_state=use_cache,
             )
 
-        y = y.transpose(1, 2).contiguous()
-        y = y.view(batch_size, seq_len, -1)
+        y = y.reshape(batch_size, seq_len, -1)
         next_cache = KDAAttentionCache(recurrent_state, conv_state) if use_cache else None
         return self.out_proj(y * F.silu(self.gate_proj(x))), next_cache
 
@@ -234,10 +247,10 @@ class SwiGLU(nn.Module):
 
 
 class KDABlock(nn.Module):
-    def __init__(self, config: KDAConfig) -> None:
+    def __init__(self, config: KDAConfig, rope_cache: RotaryCache) -> None:
         super().__init__()
         self.attn_norm = RMSNorm(config.d_model)
-        self.attention = KimiDeltaAttention(config)
+        self.attention = KimiDeltaAttention(config, rope_cache)
         self.ffn_norm = RMSNorm(config.d_model)
         self.ffn = SwiGLU(config.d_model, config.ffn_dim)
         self.residual_scale = (2 * config.n_layers) ** -0.5
@@ -260,8 +273,9 @@ class KDALanguageModel(nn.Module):
     def __init__(self, config: KDAConfig = KDAConfig()) -> None:
         super().__init__()
         self.config = config
+        self.rope_cache = RotaryCache()
         self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
-        self.layers = nn.ModuleList(KDABlock(config) for _ in range(config.n_layers))
+        self.layers = nn.ModuleList(KDABlock(config, self.rope_cache) for _ in range(config.n_layers))
         self.final_norm = RMSNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         # Weight tying saves ~4.2M parameters and is standard for language models.

@@ -230,6 +230,8 @@ def main() -> None:
     prefetcher = BatchPrefetcher(train_sources, train_weights, args.batch_size, args.seq_len)
     target_tokens = args.max_tokens or total_steps * tokens_per_step
     started_at = perf_counter()
+    window_started_at = started_at
+    window_tokens = 0
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     for step in range(total_steps):
@@ -250,6 +252,7 @@ def main() -> None:
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        window_tokens += tokens_per_step
 
         if (step + 1) % args.log_every == 0 or step + 1 == total_steps:
             if device.type == "cuda":
@@ -257,9 +260,9 @@ def main() -> None:
                 peak_gib = torch.cuda.max_memory_allocated(device) / 1024**3
             else:
                 peak_gib = 0.0
-            elapsed = perf_counter() - started_at
+            elapsed = perf_counter() - window_started_at
             tokens_seen = (step + 1) * tokens_per_step
-            tokens_per_second = tokens_seen / elapsed
+            tokens_per_second = window_tokens / elapsed
             remaining = max(0, target_tokens - tokens_seen) / tokens_per_second
             progress = min(1.0, tokens_seen / target_tokens)
             print(
@@ -268,9 +271,11 @@ def main() -> None:
                 f"ETA {format_duration(remaining)} | VRAM {peak_gib:.2f} GiB | loss {accumulated_loss:.4f} | lr {lr:.2e}",
                 flush=True,
             )
+            window_started_at, window_tokens = perf_counter(), 0
         if val_tokens is not None and args.eval_every > 0 and step > 0 and step % args.eval_every == 0:
             val_loss = estimate_loss(model, val_tokens, args.batch_size, args.seq_len, device, args.eval_steps)
             print(f"step {step:6d} | validation loss {val_loss:.4f}")
+            window_started_at, window_tokens = perf_counter(), 0
         if (args.save_every > 0 and (step + 1) % args.save_every == 0) or step + 1 == total_steps:
             model_to_save = getattr(model, "_orig_mod", model)
             checkpoint = {
@@ -288,6 +293,7 @@ def main() -> None:
             checkpoint_path = output_dir / f"kda-step-{step + 1}.pt"
             torch.save(checkpoint, checkpoint_path)
             print(f"saved {checkpoint_path}")
+            window_started_at, window_tokens = perf_counter(), 0
     prefetcher.close()
 
 
