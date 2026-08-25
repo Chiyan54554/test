@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kda_llm.retrieval import load_index
+from kda_llm.retrieval import format_grounding_system, load_index
 
 
 QUESTION_TEMPLATES = (
@@ -79,11 +79,7 @@ def build_rag_sft_records(index_path: str, examples_per_chunk: int = 6, context_
             continue
         references = "\n\n".join(f"[{index}] 來源：{item['source']}\n{context}" for index, (item, context) in enumerate(zip(selected, contexts, strict=True), start=1))
         answer = " ".join(f"{text} [{index}]" for index, text in enumerate(answers, start=1))
-        system = (
-            "僅根據下列參考資料回答。每個事實後以 [來源編號] 標示依據。"
-            "若資料不足，應回答不知道，不要捏造資料中沒有的事實。\n\n"
-            f"參考資料：\n{references}"
-        )
+        system = format_grounding_system(references)
         topic = _topic_from_chunk(chunk["text"], chunk["source"])
         full_answer = " ".join(f"{text} [{index}]" for index, text in enumerate(answers, start=1))
         facts = _facts_from_context(contexts[0], answer_chars)

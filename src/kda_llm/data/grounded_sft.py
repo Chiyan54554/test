@@ -6,16 +6,12 @@ import json
 from collections.abc import Iterable
 from pathlib import Path
 
+from kda_llm.retrieval import format_grounding_system
+
 from .sft import record_hash, write_jsonl
 
 
 REFUSAL_ANSWER = "參考資料未提供這項資訊，因此不知道。"
-SYSTEM_PROMPT = (
-    "僅根據下列參考資料回答。每個事實後以 [來源編號] 標示依據。"
-    "若資料不足，應回答不知道，不要捏造資料中沒有的事實。"
-)
-
-
 def _message_content(messages: object, role: str) -> str | None:
     if not isinstance(messages, list):
         return None
@@ -71,10 +67,11 @@ def normalize_drcd_record(row: dict[str, object], max_context_chars: int = 320) 
     context = _evidence_window(context, answer.strip() if answerable else "", max_context_chars)
     completion = f"{answer.strip()} [1]" if answerable and answer.strip() else REFUSAL_ANSWER
     source_id = str(row.get("article_id", row.get("qid", "drcd")))
+    references = f"[1] 來源：DRCD/{source_id}\n{context}"
     return {
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"參考資料：\n[1] 來源：DRCD/{source_id}\n{context}\n\n問題：{question}"},
+            {"role": "system", "content": format_grounding_system(references)},
+            {"role": "user", "content": question},
             {"role": "assistant", "content": completion},
         ],
         "source": "steven0226/drcd-zhtw-extractive-qa-sft",

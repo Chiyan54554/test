@@ -35,6 +35,8 @@ def test_drcd_records_are_converted_to_cited_answers_and_refusals() -> None:
     }
     answerable = normalize_drcd_record(base)
     assert answerable is not None
+    assert "參考資料" in answerable["messages"][0]["content"]
+    assert answerable["messages"][1]["content"] == "KDA 使用什麼？"
     assert answerable["messages"][-1]["content"] == "recurrent state [1]"
 
     base["messages"][-1]["content"] = '{"answer": "", "answerable": false}'

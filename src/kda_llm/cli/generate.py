@@ -12,7 +12,7 @@ import torch
 
 from kda_llm.env import load_env
 from kda_llm.inference import GenerationConfig, format_chat_prompt, generate, load_model, sample_next_token
-from kda_llm.retrieval import DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANKER_MODEL, DEFAULT_TRANSLATION_MODEL, detect_source_conflicts, load_index, load_vector_index, reciprocal_rank_fusion, render_cited_answer, render_context, render_verified_answer, render_web_context, rerank, retrieve, search_brave, search_free_knowledge, translate_texts_to_traditional_chinese, translate_web_hits, vector_retrieve
+from kda_llm.retrieval import DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANKER_MODEL, DEFAULT_TRANSLATION_MODEL, detect_source_conflicts, format_grounding_system, load_index, load_vector_index, reciprocal_rank_fusion, render_cited_answer, render_context, render_verified_answer, render_web_context, rerank, retrieve, search_brave, search_free_knowledge, translate_texts_to_traditional_chinese, translate_web_hits, vector_retrieve
 
 
 def main() -> None:
@@ -109,10 +109,9 @@ def main() -> None:
                 parser.error(str(error))
         contexts.append(render_web_context(web_hits, args.web_max_context_chars))
     if contexts:
-        instruction = "請以繁體中文回答；英文專有名詞可保留。僅根據下列參考資料回答；資料不足時請明確回答不知道，不要補充未提供的事實。"
         references = "\n\n".join(contexts)
         system_prompt = f"{system_prompt.strip()}\n\n" if system_prompt else ""
-        system_prompt += f"{instruction}\n\n參考資料：\n{references}"
+        system_prompt += format_grounding_system(references)
         args.chat = True
     rendered_prompt = format_chat_prompt(args.prompt, system_prompt) if args.chat else args.prompt
     if args.show_sources and hits:
