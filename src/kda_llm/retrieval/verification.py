@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .bm25 import RAGHit, tokenize
+from .bm25 import RAGHit, render_cited_answer, tokenize
 
 
 SENTENCE_PATTERN = re.compile(r"(?<=[。！？.!?])\s*")
@@ -61,3 +61,22 @@ def render_verified_answer(answer: str, hits: list[RAGHit], minimum_overlap: flo
     if not verified:
         return "資料不足，無法根據目前來源可靠回答。"
     return "".join(f"{sentence} {' '.join(f'[{index}]' for index in citations)}" for sentence, citations in verified)
+
+
+def has_direct_query_evidence(query: str, hits: list[RAGHit], minimum_terms: int = 2) -> bool:
+    """Require more than a shared topic name before replacing a refusal with evidence."""
+    query_terms = _content_terms(query)
+    return bool(query_terms) and any(len(query_terms.intersection(_content_terms(hit.text))) >= minimum_terms for hit in hits)
+
+
+def render_reliable_answer(answer: str, query: str, hits: list[RAGHit], max_chars: int, minimum_overlap: float = 0.5) -> str:
+    """Use model prose only when it is grounded; otherwise prefer direct evidence or refuse."""
+    verified = render_verified_answer(answer, hits, minimum_overlap)
+    model_refused = "不知道" in answer or "無法根據目前來源可靠回答" in verified
+    too_short = len(_content_terms(answer)) < 2
+    unreliable = model_refused or too_short or "無法根據目前來源可靠回答" in verified
+    if unreliable:
+        if has_direct_query_evidence(query, hits):
+            return render_cited_answer(hits, query, max_chars)
+        return "資料不足，無法根據目前來源可靠回答。"
+    return verified

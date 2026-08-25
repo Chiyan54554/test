@@ -1,4 +1,4 @@
-from kda_llm.retrieval import RAGHit, detect_source_conflicts, reciprocal_rank_fusion, render_verified_answer
+from kda_llm.retrieval import RAGHit, detect_source_conflicts, reciprocal_rank_fusion, render_reliable_answer, render_verified_answer
 
 
 def test_hybrid_rank_fusion_rewards_a_chunk_found_by_both_retrievers() -> None:
@@ -25,3 +25,20 @@ def test_verified_answer_removes_unsupported_sentence() -> None:
     assert "recurrent state" in answer
     assert "作者住在台北" not in answer
     assert "[1]" in answer
+
+
+def test_reliable_mode_replaces_false_refusal_with_relevant_evidence() -> None:
+    hits = [RAGHit("kda.md", "KDA 使用 recurrent state，因此適合長序列。", 2.0)]
+
+    answer = render_reliable_answer("參考資料未提供這項資訊，因此不知道。", "KDA 為何適合長序列？", hits, 200)
+
+    assert "recurrent state" in answer
+    assert "[1]" in answer
+
+
+def test_reliable_mode_keeps_refusal_when_evidence_does_not_answer_query() -> None:
+    hits = [RAGHit("kda.md", "KDA 使用 recurrent state，因此適合長序列。", 2.0)]
+
+    answer = render_reliable_answer("參考資料未提供這項資訊，因此不知道。", "KDA 的作者是誰？", hits, 200)
+
+    assert "資料不足" in answer

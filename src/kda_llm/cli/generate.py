@@ -12,7 +12,7 @@ import torch
 
 from kda_llm.env import load_env
 from kda_llm.inference import GenerationConfig, format_chat_prompt, generate, load_model, sample_next_token
-from kda_llm.retrieval import DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANKER_MODEL, DEFAULT_TRANSLATION_MODEL, detect_source_conflicts, format_grounding_system, load_index, load_vector_index, reciprocal_rank_fusion, render_cited_answer, render_context, render_verified_answer, render_web_context, rerank, retrieve, search_brave, search_free_knowledge, translate_texts_to_traditional_chinese, translate_web_hits, vector_retrieve
+from kda_llm.retrieval import DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANKER_MODEL, DEFAULT_TRANSLATION_MODEL, detect_source_conflicts, format_grounding_system, load_index, load_vector_index, reciprocal_rank_fusion, render_cited_answer, render_context, render_reliable_answer, render_verified_answer, render_web_context, rerank, retrieve, search_brave, search_free_knowledge, translate_texts_to_traditional_chinese, translate_web_hits, vector_retrieve
 
 
 def main() -> None:
@@ -42,7 +42,7 @@ def main() -> None:
     parser.add_argument("--source-conflict", choices=("ignore", "warn", "refuse"), default="warn")
     parser.add_argument("--verification-min-overlap", type=float, default=0.5)
     parser.add_argument("--show-sources", action="store_true")
-    parser.add_argument("--rag-answer-mode", choices=("generate", "extractive", "cited", "verified"), default="generate", help="generate, return source text, return cited evidence, or verify generated sentences")
+    parser.add_argument("--rag-answer-mode", choices=("generate", "extractive", "cited", "verified", "reliable"), default="generate", help="generate, return source text, return cited evidence, verify generated sentences, or safely fall back to cited evidence")
     parser.add_argument("--web-search", action="store_true", help="search arXiv and Chinese Wikipedia before answering")
     parser.add_argument("--web-provider", choices=("academic", "brave"), default="academic")
     parser.add_argument("--web-count", type=int, default=3)
@@ -130,13 +130,16 @@ def main() -> None:
         else:
             print("\n\n".join(contexts))
         return
-    if args.rag_answer_mode == "verified" and not hits:
-        parser.error("verified mode requires --rag-index for sentence evidence checks")
+    if args.rag_answer_mode in {"verified", "reliable"} and not hits:
+        parser.error("verified and reliable modes require --rag-index for sentence evidence checks")
     model = load_model(args.checkpoint, device)
     if tokenizer.vocab_size() != model.config.vocab_size:
         parser.error("tokenizer vocabulary size does not match the checkpoint")
     completion = generate(model, tokenizer, rendered_prompt, GenerationConfig(args.max_new_tokens, args.temperature, args.top_k, args.top_p, args.repetition_penalty, args.seed), device)
-    completion = render_verified_answer(completion, hits, args.verification_min_overlap) if args.rag_answer_mode == "verified" else completion
+    if args.rag_answer_mode == "verified":
+        completion = render_verified_answer(completion, hits, args.verification_min_overlap)
+    elif args.rag_answer_mode == "reliable":
+        completion = render_reliable_answer(completion, args.prompt, hits, args.rag_max_context_chars, args.verification_min_overlap)
     print(completion)
     if args.output:
         path = Path(args.output)

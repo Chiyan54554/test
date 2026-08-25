@@ -225,7 +225,7 @@ uv sync --extra cuda --extra retrieval
 uv run kda-build-vector-rag --index runs/rag/knowledge.json --output runs/rag/knowledge.vector.npz --device cuda
 ```
 
-`verified` 會先由 KDA 生成，再逐句以來源文字驗證；沒有足夠字詞證據的句子會被移除，若全部不通過就回覆資料不足。`--source-conflict refuse` 會在不同來源對同一重疊主張給出不同數字時停止回答；此為保守的啟發式檢查，不應取代人工判讀。
+`verified` 會先由 KDA 生成，再逐句以來源文字驗證；沒有足夠字詞證據的句子會被移除，若全部不通過就回覆資料不足。`reliable` 會在模型拒答或輸出過短而來源明確包含答案時，自動回退為帶引用的證據句；若來源也不支持問題，則拒答。`--source-conflict refuse` 會在不同來源對同一重疊主張給出不同數字時停止回答；此為保守的啟發式檢查，不應取代人工判讀。
 
 ```bash
 uv run kda-generate \
