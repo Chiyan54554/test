@@ -118,7 +118,27 @@ def retrieve(chunks: list[dict[str, str]], query: str, top_k: int = 3) -> list[R
     return sorted(scores, key=lambda hit: hit.score, reverse=True)[:top_k]
 
 
-def render_context(hits: list[RAGHit], max_chars: int = 500) -> str:
+def _relevant_snippet(text: str, query: str | None, limit: int) -> str:
+    """Select the best matching sentence instead of blindly taking a chunk prefix."""
+    if not query or len(text) <= limit:
+        return text[:limit].rstrip()
+    query_terms = set(tokenize(query))
+    sentences = [sentence.strip() for sentence in re.split(r"(?<=[。！？.!?])\s*", text) if sentence.strip()]
+    if not sentences:
+        return text[:limit].rstrip()
+    best_index = max(range(len(sentences)), key=lambda index: len(query_terms.intersection(tokenize(sentences[index]))))
+    selected = sentences[best_index]
+    # Preserve nearby context when it fits, while guaranteeing the best sentence remains present.
+    for neighbor_index in (best_index - 1, best_index + 1):
+        if not 0 <= neighbor_index < len(sentences):
+            continue
+        candidate = f"{sentences[neighbor_index]} {selected}" if neighbor_index < best_index else f"{selected} {sentences[neighbor_index]}"
+        if len(candidate) <= limit:
+            selected = candidate
+    return selected[:limit].rstrip()
+
+
+def render_context(hits: list[RAGHit], max_chars: int = 500, query: str | None = None) -> str:
     if max_chars <= 0:
         raise ValueError("max context chars must be positive")
     sections, remaining = [], max_chars
@@ -127,7 +147,7 @@ def render_context(hits: list[RAGHit], max_chars: int = 500) -> str:
         budget = remaining - len(header)
         if budget <= 0:
             break
-        snippet = hit.text[:budget].rstrip()
+        snippet = _relevant_snippet(hit.text, query, budget)
         sections.append(header + snippet)
         remaining -= len(header) + len(snippet)
         if remaining <= 0:

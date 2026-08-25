@@ -12,3 +12,11 @@ def test_bm25_returns_the_relevant_technical_chunk() -> None:
     assert hits[0].source == "kda.md"
     assert "來源：kda.md" in render_context(hits)
     assert "[1]" in render_cited_answer(hits, "Kimi Delta Attention 的 chunkwise kernel 是什麼？")
+
+
+def test_context_selects_a_relevant_sentence_inside_a_chunk() -> None:
+    hits = [RAGHit("kda.md", "KDA 會處理輸入 token。KDA 維護 recurrent state，因此適合長序列。", 1.0)]
+
+    context = render_context(hits, max_chars=60, query="KDA 為何適合長序列？")
+
+    assert "recurrent state" in context

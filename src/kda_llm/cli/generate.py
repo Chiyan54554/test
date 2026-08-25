@@ -91,7 +91,7 @@ def main() -> None:
             if args.source_conflict == "refuse":
                 parser.error(message)
             print(f"warning: {message}", file=sys.stderr)
-        contexts.append(render_context(hits, args.rag_max_context_chars))
+        contexts.append(render_context(hits, args.rag_max_context_chars, args.prompt))
     if args.web_search:
         try:
             web_hits = search_free_knowledge(args.prompt, args.web_count) if args.web_provider == "academic" else search_brave(args.prompt, os.getenv("BRAVE_SEARCH_API_KEY", ""), args.web_count, args.web_country, args.web_language)
